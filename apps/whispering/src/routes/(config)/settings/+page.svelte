@@ -72,7 +72,8 @@
 		] as const}
 		bind:selected={
 			() => settings.value['database.recordingRetentionStrategy'],
-			(selected) => settings.updateKey('database.recordingRetentionStrategy', selected)
+			(selected) =>
+				settings.updateKey('database.recordingRetentionStrategy', selected)
 		}
 		placeholder="Select retention strategy"
 	/>
@@ -108,5 +109,40 @@
 			}
 			placeholder="Select a language"
 		/>
+
+		<Separator />
+
+		<div class="space-y-4">
+			<div>
+				<h4 class="text-md font-medium">System Tray</h4>
+				<p class="text-muted-foreground text-sm">
+					Configure system tray behavior and window management.
+				</p>
+			</div>
+
+			<div class="space-y-2">
+				<LabeledSwitch
+					id="system.closeToTray"
+					label="Minimize to system tray instead of closing"
+					description="When enabled, closing the window will hide the app to the system tray instead of exiting."
+					bind:checked={
+						() => settings.value['system.closeToTray'],
+						(v) => settings.updateKey('system.closeToTray', v)
+					}
+				/>
+			</div>
+
+			<div class="space-y-2">
+				<LabeledSwitch
+					id="system.startMinimizedToTray"
+					label="Start minimized to system tray"
+					description="When enabled, the app will start hidden in the system tray."
+					bind:checked={
+						() => settings.value['system.startMinimizedToTray'],
+						(v) => settings.updateKey('system.startMinimizedToTray', v)
+					}
+				/>
+			</div>
+		</div>
 	{/if}
 </div>

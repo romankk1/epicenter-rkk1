@@ -121,6 +121,12 @@ export function createNavigatorRecorderService(): RecorderService {
 			// Start recording
 			mediaRecorder.start(TIMESLICE_MS);
 
+			// Update tray icon to show recording state (only if running in Tauri)
+			if (window.__TAURI_INTERNALS__) {
+				const { invoke } = await import('@tauri-apps/api/core');
+				await invoke<void>('update_tray_recording_state', { recording: true });
+			}
+
 			// Return the device acquisition outcome
 			return Ok(deviceOutcome);
 		},
@@ -175,6 +181,12 @@ export function createNavigatorRecorderService(): RecorderService {
 
 			if (stopError) return Err(stopError);
 
+			// Update tray icon to show idle state (only if running in Tauri)
+			if (window.__TAURI_INTERNALS__) {
+				const { invoke } = await import('@tauri-apps/api/core');
+				await invoke<void>('update_tray_recording_state', { recording: false });
+			}
+
 			sendStatus({
 				title: '✅ Recording Saved',
 				description: 'Your recording is ready for transcription!',
@@ -202,6 +214,12 @@ export function createNavigatorRecorderService(): RecorderService {
 
 			// Clean up the stream
 			cleanupRecordingStream(recording.stream);
+
+			// Update tray icon to show idle state (only if running in Tauri)
+			if (window.__TAURI_INTERNALS__) {
+				const { invoke } = await import('@tauri-apps/api/core');
+				await invoke<void>('update_tray_recording_state', { recording: false });
+			}
 
 			sendStatus({
 				title: '✨ Cancelled',

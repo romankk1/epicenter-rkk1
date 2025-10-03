@@ -111,6 +111,11 @@ export const settings = (() => {
 		 */
 		updateKey<K extends keyof Settings>(key: K, value: Settings[K]) {
 			_settings.value = { ..._settings.value, [key]: value };
+			
+			// Sync tray settings if they changed (only in Tauri environment)
+			if ((key === 'system.closeToTray' || key === 'system.startMinimizedToTray') && window.__TAURI_INTERNALS__) {
+				syncTraySettings();
+			}
 		},
 
 		/**
@@ -174,8 +179,32 @@ export const settings = (() => {
 
 			return Ok(newMode);
 		},
+
+		/**
+		 * Syncs tray behavior settings with the Rust backend
+		 */
+		async syncTraySettings() {
+			return syncTraySettings();
+		},
 	};
 })();
+
+/**
+ * Syncs tray behavior settings with the Rust backend
+ */
+async function syncTraySettings() {
+	if (!window.__TAURI_INTERNALS__) return;
+	
+	try {
+		const { invoke } = await import('@tauri-apps/api/core');
+		await invoke('set_tray_settings', {
+			closeToTray: settings.value['system.closeToTray'],
+			startMinimized: settings.value['system.startMinimizedToTray']
+		});
+	} catch (error) {
+		console.warn('Failed to sync tray settings:', error);
+	}
+}
 
 /**
  * Ensures only one recording mode is active at a time by stopping all other modes.

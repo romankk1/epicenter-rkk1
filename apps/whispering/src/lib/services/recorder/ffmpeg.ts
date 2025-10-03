@@ -368,6 +368,14 @@ export function createFfmpegRecorderService(): RecorderService {
 				description: 'FFmpeg is now recording audio...',
 			});
 
+			// Update tray icon to show recording state
+			try {
+				await invoke<void>('update_tray_recording_state', { recording: true });
+			} catch (error) {
+				// Tray update is non-critical, log but continue
+				console.warn('Failed to update tray recording state:', error);
+			}
+
 			return Ok(deviceOutcome);
 		},
 
@@ -424,6 +432,14 @@ export function createFfmpegRecorderService(): RecorderService {
 
 			// Clear the session
 			sessionState.value = null;
+
+			// Update tray icon to show idle state
+			try {
+				await invoke<void>('update_tray_recording_state', { recording: false });
+			} catch (error) {
+				// Tray update is non-critical, log but continue
+				console.warn('Failed to update tray recording state:', error);
+			}
 
 			// Poll for file stabilization
 			const MAX_WAIT_TIME = 3000; // 3 seconds max
@@ -510,6 +526,14 @@ export function createFfmpegRecorderService(): RecorderService {
 
 			// Clear the session and kill the process
 			await clearSession();
+
+			// Update tray icon to show idle state
+			try {
+				await invoke<void>('update_tray_recording_state', { recording: false });
+			} catch (error) {
+				// Tray update is non-critical, log but continue
+				console.warn('Failed to update tray recording state:', error);
+			}
 
 			// Delete the output file if it exists
 			if (pathToCleanup) {

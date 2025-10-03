@@ -53,6 +53,8 @@
 			syncGlobalShortcutsWithSettings();
 			resetGlobalShortcutsToDefaultIfDuplicates();
 			await checkForUpdates();
+			// Sync tray settings on app startup
+			await settings.syncTraySettings();
 		} else {
 			// const _notifyWhisperingTabReadyResult =
 			// await extension.notifyWhisperingTabReady(undefined);

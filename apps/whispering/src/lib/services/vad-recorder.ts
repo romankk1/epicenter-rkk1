@@ -1,5 +1,6 @@
 import type { VadState } from '$lib/constants/audio';
 import { MicVAD, utils } from '@ricky0123/vad-web';
+import { invoke } from '@tauri-apps/api/core';
 import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';
 import { Err, Ok, tryAsync, trySync } from 'wellcrafted/result';
 import { cleanupRecordingStream, getRecordingStream } from './device-stream';
@@ -134,6 +135,17 @@ export function createVadService() {
 
 			maybeVad = newVad;
 			vadState = 'LISTENING';
+
+			// Update tray icon to show recording state (VAD is now active)
+			try {
+				if (window.__TAURI_INTERNALS__) {
+					await invoke<void>('update_tray_recording_state', { recording: true });
+				}
+			} catch (error) {
+				// Tray update is non-critical, log but continue
+				console.warn('Failed to update tray recording state:', error);
+			}
+
 			return Ok(deviceOutcome);
 		},
 
@@ -154,6 +166,16 @@ export function createVadService() {
 			// Always clean up, even if destroy had an error
 			maybeVad = null;
 			vadState = 'IDLE';
+
+			// Update tray icon to show idle state
+			try {
+				if (window.__TAURI_INTERNALS__) {
+					await invoke<void>('update_tray_recording_state', { recording: false });
+				}
+			} catch (error) {
+				// Tray update is non-critical, log but continue
+				console.warn('Failed to update tray recording state:', error);
+			}
 
 			// Clean up our managed stream
 			if (currentStream) {

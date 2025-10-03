@@ -17,6 +17,9 @@ use windows_path::fix_windows_path;
 pub mod graceful_shutdown;
 use graceful_shutdown::send_sigint;
 
+pub mod tray;
+use tray::{setup_tray, update_tray_recording_state, is_tray_supported, toggle_window_visibility, set_tray_settings, should_hide_to_tray, TrayManager};
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[tokio::main]
@@ -68,26 +71,60 @@ pub async fn run() {
     }
 
     // Register command handlers (same for all platforms now)
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        write_text,
-        // Audio recorder commands
-        get_current_recording_id,
-        enumerate_recording_devices,
-        init_recording_session,
-        close_recording_session,
-        start_recording,
-        stop_recording,
-        cancel_recording,
-        transcribe_audio_whisper,
-        transcribe_audio_parakeet,
-        send_sigint,
-    ]);
+    let builder = builder
+        .manage(TrayManager::new())
+        .invoke_handler(tauri::generate_handler![
+            write_text,
+            // Audio recorder commands
+            get_current_recording_id,
+            enumerate_recording_devices,
+            init_recording_session,
+            close_recording_session,
+            start_recording,
+            stop_recording,
+            cancel_recording,
+            transcribe_audio_whisper,
+            transcribe_audio_parakeet,
+            send_sigint,
+            // Tray commands
+            update_tray_recording_state,
+            is_tray_supported,
+            toggle_window_visibility,
+            set_tray_settings,
+        ]);
 
     let app = builder
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
+    // Setup system tray
+    if let Err(e) = setup_tray(app.handle()) {
+        tracing::warn!("Failed to setup system tray: {}", e);
+        // Continue without tray functionality
+    }
+
     app.run(|handler, event| {
+        // Handle window events
+        match &event {
+            tauri::RunEvent::WindowEvent { label, event, .. } => {
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        // Check if we should hide to tray instead of closing
+                        if should_hide_to_tray(&handler) {
+                            tracing::info!("Hiding window to tray instead of closing");
+                            api.prevent_close();
+                            if let Some(window) = handler.get_webview_window(&label) {
+                                let _ = window.hide();
+                            }
+                        }
+                        // If should_hide_to_tray() returns false, allow normal close
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+
         // Only track events if Aptabase is enabled (key is not empty)
         if !aptabase_key.is_empty() {
             match event {

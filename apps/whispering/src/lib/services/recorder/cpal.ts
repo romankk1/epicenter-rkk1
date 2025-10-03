@@ -210,6 +210,9 @@ export function createCpalRecorderService(): RecorderService {
 					cause: startRecordingError,
 				});
 
+			// Update tray icon to show recording state
+			await invoke<void>('update_tray_recording_state', { recording: true });
+
 			return Ok(deviceOutcome);
 		},
 
@@ -280,6 +283,9 @@ export function createCpalRecorderService(): RecorderService {
 				// Log but don't fail the stop operation
 				console.error('Failed to close recording session:', closeError);
 			}
+
+			// Update tray icon to show idle state
+			await invoke<void>('update_tray_recording_state', { recording: false });
 
 			return Ok(blob);
 		},
@@ -354,6 +360,9 @@ export function createCpalRecorderService(): RecorderService {
 				// Log but don't fail the cancel operation
 				console.error('Failed to close recording session:', closeError);
 			}
+
+			// Update tray icon to show idle state
+			await invoke<void>('update_tray_recording_state', { recording: false });
 
 			return Ok({ status: 'cancelled' });
 		},

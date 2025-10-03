@@ -66,7 +66,7 @@ import type { DeepgramModel } from '$lib/services/transcription/cloud/deepgram';
  * - `recording.*` - Recording mode and device settings
  * - `shortcuts.*` - Keyboard shortcut mappings
  * - `apiKeys.*` - Service API keys
- * - `system.*` - System-level preferences
+ * - `system.*` - System-level preferences (window behavior, tray settings)
  * - `database.*` - Data retention policies
  *
  * @example
@@ -100,6 +100,8 @@ export const settingsSchema = z.object({
 	'transformation.writeToCursorOnSuccess': z.boolean().default(false),
 
 	'system.alwaysOnTop': z.enum(ALWAYS_ON_TOP_VALUES).default('Never'),
+	'system.closeToTray': z.boolean().default(false),
+	'system.startMinimizedToTray': z.boolean().default(false),
 
 	'database.recordingRetentionStrategy': z
 		.enum(['keep-forever', 'limit-count'])
