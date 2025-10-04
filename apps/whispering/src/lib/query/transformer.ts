@@ -1,8 +1,8 @@
 import {
 	WhisperingErr,
-	fromTaggedErr,
 	type WhisperingError,
 	type WhisperingResult,
+	fromTaggedErr,
 } from '$lib/result';
 import * as services from '$lib/services';
 import type {
@@ -12,9 +12,10 @@ import type {
 	TransformationStep,
 } from '$lib/services/db';
 import { settings } from '$lib/stores/settings.svelte';
+import { type TemplateString, asTemplateString, interpolateTemplate } from '$lib/utils/template';
+import { invoke } from '@tauri-apps/api/core';
 import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';
 import { Err, Ok, type Result, isErr } from 'wellcrafted/result';
-import { interpolateTemplate, asTemplateString, type TemplateString } from '$lib/utils/template';
 import { defineMutation, queryClient } from './_client';
 import { transformationRunKeys } from './transformation-runs';
 import { transformationsKeys } from './transformations';
@@ -286,7 +287,25 @@ async function runTransformation({
 		TransformServiceError
 	>
 > {
+	// Update tray to processing state
+	if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+		try {
+			await invoke<void>('update_tray_processing_state', { processing: true });
+		} catch (error) {
+			// Gracefully continue if tray update fails
+			console.warn('Failed to update tray to processing state:', error);
+		}
+	}
+
 	if (!input.trim()) {
+		// Reset tray state on early return
+		if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+			try {
+				await invoke<void>('update_tray_processing_state', { processing: false });
+			} catch (error) {
+				console.warn('Failed to reset tray to idle state:', error);
+			}
+		}
 		return TransformServiceErr({
 			message: 'Empty input. Please enter some text to transform',
 			cause: undefined,
@@ -295,6 +314,14 @@ async function runTransformation({
 	}
 
 	if (transformation.steps.length === 0) {
+		// Reset tray state on early return
+		if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+			try {
+				await invoke<void>('update_tray_processing_state', { processing: false });
+			} catch (error) {
+				console.warn('Failed to reset tray to idle state:', error);
+			}
+		}
 		return TransformServiceErr({
 			message:
 				'No steps configured. Please add at least one transformation step',
@@ -310,7 +337,15 @@ async function runTransformation({
 			input,
 		});
 
-	if (createTransformationRunError)
+	if (createTransformationRunError) {
+		// Reset tray state on error
+		if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+			try {
+				await invoke<void>('update_tray_processing_state', { processing: false });
+			} catch (error) {
+				console.warn('Failed to reset tray to idle state:', error);
+			}
+		}
 		return TransformServiceErr({
 			message: 'Unable to start transformation run',
 			cause: createTransformationRunError,
@@ -321,6 +356,7 @@ async function runTransformation({
 				createTransformationRunError,
 			},
 		});
+	}
 
 	let currentInput = input;
 
@@ -336,7 +372,15 @@ async function runTransformation({
 			},
 		});
 
-		if (addTransformationStepRunError)
+		if (addTransformationStepRunError) {
+			// Reset tray state on error
+			if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+				try {
+					await invoke<void>('update_tray_processing_state', { processing: false });
+				} catch (error) {
+					console.warn('Failed to reset tray to idle state:', error);
+				}
+			}
 			return TransformServiceErr({
 				message: 'Unable to initialize transformation step',
 				cause: addTransformationStepRunError,
@@ -347,6 +391,7 @@ async function runTransformation({
 					addTransformationStepRunError,
 				},
 			});
+		}
 
 		const handleStepResult = await handleStep({
 			input: currentInput,
@@ -362,7 +407,15 @@ async function runTransformation({
 				stepRunId: newTransformationStepRun.id,
 				error: handleStepResult.error,
 			});
-			if (markTransformationRunAndRunStepAsFailedError)
+			if (markTransformationRunAndRunStepAsFailedError) {
+				// Reset tray state on error
+				if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+					try {
+						await invoke<void>('update_tray_processing_state', { processing: false });
+					} catch (error) {
+						console.warn('Failed to reset tray to idle state:', error);
+					}
+				}
 				return TransformServiceErr({
 					message: 'Unable to save failed transformation step result',
 					cause: markTransformationRunAndRunStepAsFailedError,
@@ -373,6 +426,17 @@ async function runTransformation({
 						markTransformationRunAndRunStepAsFailedError,
 					},
 				});
+			}
+			
+			// Reset tray state on transformation failure
+			if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+				try {
+					await invoke<void>('update_tray_processing_state', { processing: false });
+				} catch (error) {
+					console.warn('Failed to reset tray to idle state:', error);
+				}
+			}
+			
 			return Ok(markedFailedTransformationRun);
 		}
 
@@ -385,7 +449,15 @@ async function runTransformation({
 				output: handleStepOutput,
 			});
 
-		if (markTransformationRunStepAsCompletedError)
+		if (markTransformationRunStepAsCompletedError) {
+			// Reset tray state on error
+			if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+				try {
+					await invoke<void>('update_tray_processing_state', { processing: false });
+				} catch (error) {
+					console.warn('Failed to reset tray to idle state:', error);
+				}
+			}
 			return TransformServiceErr({
 				message: 'Unable to save completed transformation step result',
 				cause: markTransformationRunStepAsCompletedError,
@@ -396,6 +468,7 @@ async function runTransformation({
 					markTransformationRunStepAsCompletedError,
 				},
 			});
+		}
 
 		currentInput = handleStepOutput;
 	}
@@ -408,7 +481,15 @@ async function runTransformation({
 		output: currentInput,
 	});
 
-	if (markTransformationRunAsCompletedError)
+	if (markTransformationRunAsCompletedError) {
+		// Reset tray state on error
+		if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+			try {
+				await invoke<void>('update_tray_processing_state', { processing: false });
+			} catch (error) {
+				console.warn('Failed to reset tray to idle state:', error);
+			}
+		}
 		return TransformServiceErr({
 			message: 'Unable to save completed transformation run',
 			cause: markTransformationRunAsCompletedError,
@@ -418,5 +499,16 @@ async function runTransformation({
 				markTransformationRunAsCompletedError,
 			},
 		});
+	}
+
+	// Reset tray to idle state on success
+	if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+		try {
+			await invoke<void>('update_tray_processing_state', { processing: false });
+		} catch (error) {
+			console.warn('Failed to reset tray to idle state:', error);
+		}
+	}
+	
 	return Ok(markedCompletedTransformationRun);
 }

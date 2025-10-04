@@ -18,7 +18,7 @@ pub mod graceful_shutdown;
 use graceful_shutdown::send_sigint;
 
 pub mod tray;
-use tray::{setup_tray, update_tray_recording_state, is_tray_supported, toggle_window_visibility, set_tray_settings, should_hide_to_tray, TrayManager};
+use tray::{setup_tray, update_tray_recording_state, update_tray_processing_state, is_tray_supported, toggle_window_visibility, set_tray_settings, should_hide_to_tray, TrayManager};
 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -88,6 +88,7 @@ pub async fn run() {
             send_sigint,
             // Tray commands
             update_tray_recording_state,
+            update_tray_processing_state,
             is_tray_supported,
             toggle_window_visibility,
             set_tray_settings,

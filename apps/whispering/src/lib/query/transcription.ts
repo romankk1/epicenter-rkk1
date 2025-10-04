@@ -1,21 +1,22 @@
+import { goto } from '$app/navigation';
 import {
 	WhisperingErr,
-	WhisperingWarningErr,
 	type WhisperingError,
+	WhisperingWarningErr,
 } from '$lib/result';
 import * as services from '$lib/services';
 import type { Recording } from '$lib/services/db';
 import { settings } from '$lib/stores/settings.svelte';
+import { invoke } from '@tauri-apps/api/core';
 import { Err, Ok, type Result, partitionResults } from 'wellcrafted/result';
-import { defineMutation, queryClient } from './_client';
-import { notify } from './notify';
-import { recordings } from './recordings';
-import { rpc } from './';
 import {
 	RECORDING_COMPATIBILITY_MESSAGE,
 	hasLocalTranscriptionCompatibilityIssue,
 } from '../../routes/+layout/check-ffmpeg';
-import { goto } from '$app/navigation';
+import { rpc } from './';
+import { defineMutation, queryClient } from './_client';
+import { notify } from './notify';
+import { recordings } from './recordings';
 
 const transcriptionKeys = {
 	isTranscribing: ['transcription', 'isTranscribing'] as const,
@@ -124,6 +125,16 @@ async function transcribeBlob(
 ): Promise<Result<string, WhisperingError>> {
 	const selectedService =
 		settings.value['transcription.selectedTranscriptionService'];
+
+	// Update tray to processing state
+	if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+		try {
+			await invoke<void>('update_tray_processing_state', { processing: true });
+		} catch (error) {
+			// Gracefully continue if tray update fails
+			console.warn('Failed to update tray to processing state:', error);
+		}
+	}
 
 	// Log transcription request
 	const startTime = Date.now();
@@ -294,6 +305,16 @@ async function transcribeBlob(
 			provider: selectedService,
 			duration,
 		});
+	}
+
+	// Reset tray to idle state
+	if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+		try {
+			await invoke<void>('update_tray_processing_state', { processing: false });
+		} catch (error) {
+			// Gracefully continue if tray update fails
+			console.warn('Failed to reset tray to idle state:', error);
+		}
 	}
 
 	return transcriptionResult;

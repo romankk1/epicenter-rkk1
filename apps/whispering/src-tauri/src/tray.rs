@@ -220,13 +220,13 @@ pub fn update_tray_recording_state<R: Runtime>(
     Ok(())
 }
 
-/// Tauri command to update tray to processing state from frontend
+/// Tauri command to update tray processing state from frontend
 #[tauri::command]
 pub fn update_tray_processing_state<R: Runtime>(
     processing: bool,
     app: AppHandle<R>,
 ) -> Result<(), String> {
-    // Update the tray icon to processing or idle
+    // Update the tray icon to processing or idle state
     let state = if processing { TrayState::Processing } else { TrayState::Idle };
     update_tray_icon(&app, state).map_err(|e| e.to_string())?;
     
