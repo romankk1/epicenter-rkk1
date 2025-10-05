@@ -58,7 +58,7 @@ export const transcription = {
 				});
 			}
 			const { data: transcribedText, error: transcribeError } =
-				await transcribeBlob(recording.blob);
+				await transcribeBlob(recording.blob, { setProcessingState: true });
 			if (transcribeError) {
 				const { error: setRecordingTranscribingError } =
 					await recordings.updateRecording.execute({
@@ -118,16 +118,86 @@ export const transcription = {
 			return Ok(partitionedResults);
 		},
 	}),
+
+	// Internal function for transcribing recordings that come from the recorder
+	// (where processing state is already set by the recorder)
+	transcribeRecordingFromRecorder: async (
+		recording: Recording,
+	): Promise<Result<string, WhisperingError>> => {
+		if (!recording.blob) {
+			return WhisperingErr({
+				title: '⚠️ Recording blob not found',
+				description: "Your recording doesn't have a blob to transcribe.",
+			});
+		}
+		const { error: setRecordingTranscribingError } =
+			await recordings.updateRecording.execute({
+				...recording,
+				transcriptionStatus: 'TRANSCRIBING',
+			});
+		if (setRecordingTranscribingError) {
+			notify.warning.execute({
+				title:
+					'⚠️ Unable to set recording transcription status to transcribing',
+				description: 'Continuing with the transcription process...',
+				action: {
+					type: 'more-details',
+					error: setRecordingTranscribingError,
+				},
+			});
+		}
+		const { data: transcribedText, error: transcribeError } =
+			await transcribeBlob(recording.blob, { setProcessingState: false });
+		if (transcribeError) {
+			const { error: setRecordingTranscribingError } =
+				await recordings.updateRecording.execute({
+					...recording,
+					transcriptionStatus: 'FAILED',
+				});
+			if (setRecordingTranscribingError) {
+				notify.warning.execute({
+					title: '⚠️ Unable to update recording after transcription',
+					description:
+						"Transcription failed but unable to update recording's transcription status in database",
+					action: {
+						type: 'more-details',
+						error: setRecordingTranscribingError,
+					},
+				});
+			}
+			return Err(transcribeError);
+		}
+
+		const { error: setRecordingTranscribedTextError } =
+			await recordings.updateRecording.execute({
+				...recording,
+				transcribedText,
+				transcriptionStatus: 'DONE',
+			});
+		if (setRecordingTranscribedTextError) {
+			notify.warning.execute({
+				title: '⚠️ Unable to update recording after transcription',
+				description:
+					"Transcription completed but unable to update recording's transcribed text and status in database",
+				action: {
+					type: 'more-details',
+					error: setRecordingTranscribedTextError,
+				},
+			});
+		}
+		return Ok(transcribedText);
+	},
 };
 
 async function transcribeBlob(
 	blob: Blob,
+	options: { setProcessingState?: boolean } = { setProcessingState: true }
 ): Promise<Result<string, WhisperingError>> {
 	const selectedService =
 		settings.value['transcription.selectedTranscriptionService'];
 
-	// Update tray to processing state
-	if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+	// Update tray to processing state if requested (for UI-initiated transcriptions)
+	if (options.setProcessingState && typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
 		try {
 			await invoke<void>('update_tray_processing_state', { processing: true });
 		} catch (error) {

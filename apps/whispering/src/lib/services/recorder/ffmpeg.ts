@@ -433,12 +433,12 @@ export function createFfmpegRecorderService(): RecorderService {
 			// Clear the session
 			sessionState.value = null;
 
-			// Update tray icon to show idle state
+			// Update tray icon to show processing state (transcription will follow)
 			try {
-				await invoke<void>('update_tray_recording_state', { recording: false });
+				await invoke<void>('update_tray_processing_state', { processing: true });
 			} catch (error) {
 				// Tray update is non-critical, log but continue
-				console.warn('Failed to update tray recording state:', error);
+				console.warn('Failed to update tray processing state:', error);
 			}
 
 			// Poll for file stabilization

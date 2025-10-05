@@ -167,14 +167,14 @@ export function createVadService() {
 			maybeVad = null;
 			vadState = 'IDLE';
 
-			// Update tray icon to show idle state
+			// Update tray icon to show processing state (transcription will follow)
 			try {
 				if (window.__TAURI_INTERNALS__) {
-					await invoke<void>('update_tray_recording_state', { recording: false });
+					await invoke<void>('update_tray_processing_state', { processing: true });
 				}
 			} catch (error) {
 				// Tray update is non-critical, log but continue
-				console.warn('Failed to update tray recording state:', error);
+				console.warn('Failed to update tray processing state:', error);
 			}
 
 			// Clean up our managed stream

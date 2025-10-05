@@ -1,4 +1,4 @@
-import { TIMESLICE_MS, type CancelRecordingResult, type WhisperingRecordingState } from '$lib/constants/audio';
+import { type CancelRecordingResult, TIMESLICE_MS, type WhisperingRecordingState } from '$lib/constants/audio';
 import { Err, Ok, type Result, tryAsync, trySync } from 'wellcrafted/result';
 import {
 	cleanupRecordingStream,
@@ -6,16 +6,16 @@ import {
 	getRecordingStream,
 } from '../device-stream';
 import type {
+	DeviceAcquisitionOutcome,
+	DeviceIdentifier,
+	UpdateStatusMessageFn,
+} from '../types';
+import type {
 	NavigatorRecordingParams,
 	RecorderService,
 	RecorderServiceError,
 } from './types';
 import { RecorderServiceErr } from './types';
-import type {
-	DeviceIdentifier,
-	DeviceAcquisitionOutcome,
-	UpdateStatusMessageFn,
-} from '../types';
 
 type ActiveRecording = {
 	recordingId: string;
@@ -181,10 +181,10 @@ export function createNavigatorRecorderService(): RecorderService {
 
 			if (stopError) return Err(stopError);
 
-			// Update tray icon to show idle state (only if running in Tauri)
+			// Update tray icon to show processing state (transcription will follow)
 			if (window.__TAURI_INTERNALS__) {
 				const { invoke } = await import('@tauri-apps/api/core');
-				await invoke<void>('update_tray_recording_state', { recording: false });
+				await invoke<void>('update_tray_processing_state', { processing: true });
 			}
 
 			sendStatus({

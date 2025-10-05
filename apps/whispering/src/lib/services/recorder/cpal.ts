@@ -284,8 +284,8 @@ export function createCpalRecorderService(): RecorderService {
 				console.error('Failed to close recording session:', closeError);
 			}
 
-			// Update tray icon to show idle state
-			await invoke<void>('update_tray_recording_state', { recording: false });
+			// Update tray icon to show processing state (transcription will follow)
+			await invoke<void>('update_tray_processing_state', { processing: true });
 
 			return Ok(blob);
 		},
