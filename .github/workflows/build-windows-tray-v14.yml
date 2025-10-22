@@ -1,0 +1,29 @@
+Run choco install vulkan-sdk --yes --no-progress
+  
+Chocolatey v2.5.1
+Installing the following packages:
+vulkan-sdk
+By installing, you accept licenses for the packages.
+Downloading package from source 'https://community.chocolatey.org/api/v2/'
+vulkan-sdk v1.2.182 [Approved] - Likely broken for FOSS users (due to download location changes)
+vulkan-sdk package files install completed. Performing other installation steps.
+Attempt to get headers for https://sdk.lunarg.com/sdk/download/1.2.182/windows/VulkanSDK-1.2.182-Installer.exe failed.
+  The remote file either doesn't exist, is unauthorized, or is forbidden for url 'https://sdk.lunarg.com/sdk/download/1.2.182/windows/VulkanSDK-1.2.182-Installer.exe'. Exception calling "GetResponse" with "0" argument(s): "The remote server returned an error: (404) Not Found."
+Downloading vulkan-sdk 
+  from 'https://sdk.lunarg.com/sdk/download/1.2.182/windows/VulkanSDK-1.2.182-Installer.exe'
+ERROR: The remote file either doesn't exist, is unauthorized, or is forbidden for url 'https://sdk.lunarg.com/sdk/download/1.2.182/windows/VulkanSDK-1.2.182-Installer.exe'. Exception calling "GetResponse" with "0" argument(s): "The remote server returned an error: (404) Not Found." 
+This package is likely not broken for licensed users - see https://docs.chocolatey.org/en-us/features/private-cdn.
+The install of vulkan-sdk was NOT successful.
+Error while running 'C:\ProgramData\chocolatey\lib\vulkan-sdk\tools\chocolateyinstall.ps1'.
+ See log for details.
+Chocolatey installed 0/1 packages. 1 packages failed.
+ See the log for details (C:\ProgramData\chocolatey\logs\chocolatey.log).
+Failures
+ - vulkan-sdk (exited 404) - Error while running 'C:\ProgramData\chocolatey\lib\vulkan-sdk\tools\chocolateyinstall.ps1'.
+ See log for details.
+Exception: D:\a\_temp\a3901a16-7804-4dd1-82ba-c16641085f98.ps1:6
+Line |
+   6 |    throw "Vulkan SDK non trovato dopo l'installazione."
+     |    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Vulkan SDK non trovato dopo l'installazione.
+Error: Process completed with exit code 1.
