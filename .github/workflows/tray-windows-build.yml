@@ -1,14 +1,15 @@
-name: Build Whispering (Windows) with Tray (no-merge, no-conflicts)
+name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v2
 
 on:
   workflow_dispatch:
-  # se vuoi compilarlo automaticamente ad ogni push nel tuo fork, lascia anche:
-  # push:
-  #   branches: [ main ]
 
 jobs:
   build-tray-windows:
     runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash   # forza bash per tutti gli step "run"
 
     steps:
       - name: Checkout (placeholder)
@@ -18,7 +19,7 @@ jobs:
         run: |
           git clone https://github.com/epicenter-md/epicenter.git epicenter-up
           cd epicenter-up
-          git fetch --all
+          git fetch --all --prune
           git checkout origin/main -B tray-build
 
       - name: Add tray feature remote & fetch
@@ -28,12 +29,14 @@ jobs:
           git fetch tray feature/minimize-to-tray
 
       - name: Merge tray feature preferring tray on conflicts
-        shell: bash
         run: |
           cd epicenter-up
-          # Unione "automatica" che in caso di conflitti sceglie i cambi della tray
+          # Configura identità per eventuale commit di merge
+          git config user.name "tray-bot"
+          git config user.email "tray-bot@users.noreply.github.com"
+          # Unione automatica: in caso di conflitti preferisci le modifiche della tray
           git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
-          # forza il completamento in caso restino file non indicizzati
+          # Se ci sono file non indicizzati o merge sospeso, forza l’add + commit
           git add -A || true
           git commit -m "Temp merge: upstream main + tray feature for build" || true
 
@@ -42,7 +45,7 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Rust (Tauri)
+      - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Bun
@@ -56,9 +59,10 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
+      # usa sempre la CLI tauri via bunx per evitare "tauri: command not found"
       - name: Build Whispering (Windows + Tray)
         working-directory: epicenter-up/apps/whispering
-        run: bun tauri build
+        run: bunx --bun @tauri-apps/cli@latest tauri build
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
