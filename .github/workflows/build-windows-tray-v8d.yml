@@ -1,4 +1,4 @@
-name: Build Windows Tray v8f
+name: Build Windows Tray v8g
 
 on:
   workflow_dispatch:
@@ -119,17 +119,14 @@ jobs:
             echo "Patched imports in $C"
           fi
 
-          # 4) navigator.ts — tieni SOLO l'import da constants, rimuovi TUTTE le dichiarazioni locali (anche destrutturazioni)
+          # 4) navigator.ts — solo import, zero dichiarazioni locali (anche destrutturazioni)
           N="src/lib/services/recorder/navigator.ts"
           if [ -f "$N" ]; then
-            # Assicura l'import
             if ! grep -q "\$lib/constants/audio" "$N"; then
               sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
             fi
-            # Rimuovi const/let/var locali e destrutturazioni contenenti TIMESLICE_MS
             sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+TIMESLICE_MS([[:space:]=,]|$)/d' "$N"
             sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+\{[^}]*\bTIMESLICE_MS\b[^}]*\}[[:space:]=]/d' "$N"
-            # Se ci sono import multipli dal file constants, rimuovi TIMESLICE_MS da quelli successivi al primo
             awk '
               BEGIN{seen=0}
               {
@@ -148,13 +145,16 @@ jobs:
             echo "Fully normalized TIMESLICE_MS in $N"
           fi
 
-          # 5) transformer.ts — dedupe wellcrafted/error import (tiene 1 riga standard in cima)
+          # 5) transformer.ts — dedupe both wellcrafted/error and wellcrafted/result
           T="src/lib/query/transformer.ts"
           if [ -f "$T" ]; then
+            # rimuovi TUTTE le import da error/result
             tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/error['\"];?[[:space:]]*$" "$T" > "$tmp" || true
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true
             mv "$tmp" "$T"
+            # inserisci ESATTAMENTE queste due righe in cima
             sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
+            sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
             echo "Patched imports in $T"
           fi
 
