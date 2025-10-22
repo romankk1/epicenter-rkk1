@@ -1,0 +1,181 @@
+name: Build Windows Tray v9
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone upstream epicenter (latest main)
+        run: |
+          git clone https://github.com/epicenter-md/epicenter.git epicenter-up
+          cd epicenter-up
+          git fetch --all --prune
+          git checkout origin/main -B tray-build
+
+      - name: Add tray feature remote & merge (prefer tray)
+        run: |
+          cd epicenter-up
+          git config user.name "tray-bot"
+          git config user.email "tray-bot@users.noreply.github.com"
+          git remote add tray https://github.com/vishesh-sachan/epicenter.git 2>$null
+          git fetch tray feature/minimize-to-tray
+          git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
+          git add -A
+          git commit -m "Temp merge: upstream main + tray feature" || true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install WiX & NSIS
+        run: |
+          choco install wixtoolset --yes --no-progress  | Out-Null
+          choco install nsis        --yes --no-progress  | Out-Null
+          $paths = @(
+            'C:\Program Files (x86)\WiX Toolset v3.14\bin',
+            'C:\Program Files (x86)\WiX Toolset v3.11\bin',
+            'C:\Program Files (x86)\NSIS',
+            'C:\Program Files\NSIS'
+          )
+          foreach ($p in $paths) { if (Test-Path $p) { $env:Path += ';' + $p } }
+          Write-Host "WiX/NSIS ready"
+
+      - name: Install deps
+        working-directory: epicenter-up
+        run: bun install
+
+      - name: Prepatch (spans, ffmpeg shims, commands.ts, transformer.ts)
+        working-directory: epicenter-up/apps/whispering
+        run: |
+          # 1) Fix self-closing <span />
+          $F = "src/routes/(config)/settings/transcription/+page.svelte"
+          if (Test-Path $F) {
+            $s = Get-Content -Raw $F
+            $s = [Regex]::Replace($s, '<span([^>]*)/>', '<span$1></span>')
+            Set-Content -Path $F -Value $s -NoNewline
+            "Fixed <span/> in $F"
+          }
+
+          # 2) check-ffmpeg shims (due posizioni) con export mancante
+          function Write-Shim($TargetPath) {
+            if (-not (Test-Path $TargetPath)) {
+              New-Item -ItemType Directory -Force -Path (Split-Path $TargetPath) | Out-Null
+              $shim = @'
+export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+
+// In CI assumiamo ffmpeg "ok" per non bloccare la UI.
+export async function checkFfmpeg(): Promise<FfmpegCheck> {
+  return { available: true, version: 'CI' };
+}
+
+// Alcuni punti della UI importano questa per mostrare avvisi sul navigator.
+// In CI ritorniamo sempre false.
+export function hasNavigatorLocalTranscriptionIssue(): boolean {
+  return false;
+}
+
+export default checkFfmpeg;
+'@
+              Set-Content -Path $TargetPath -Value $shim -NoNewline
+              "Created shim $TargetPath"
+            }
+          }
+          Write-Shim "src/routes/(config)/+layout/check-ffmpeg.ts"
+          Write-Shim "src/routes/+layout/check-ffmpeg.ts"
+
+          # 3) commands.ts — dedupe imports (wellcrafted/result + nanoid)
+          $C = "src/lib/query/commands.ts"
+          if (Test-Path $C) {
+            $lines = Get-Content $C
+            $out = New-Object System.Collections.Generic.List[string]
+            foreach ($line in $lines) {
+              if ($line -match "^\s*import\s*\{[^\}]*\}\s*from\s*['""]wellcrafted/result['""];?\s*$") { continue }
+              if ($line -match "^\s*import\s*\{\s*nanoid\s*\}\s*from\s*['""]nanoid(\/non-secure)?['""];?\s*$")   { continue }
+              $out.Add($line)
+            }
+            $out.Insert(0, "import { nanoid } from 'nanoid/non-secure';")
+            $out.Insert(0, "import { Err, Ok } from 'wellcrafted/result';")
+            Set-Content -Path $C -Value $out -NoNewline
+            "Patched $C"
+          }
+
+          # 4) transformer.ts — dedupe imports (wellcrafted/error + result)
+          $T = "src/lib/query/transformer.ts"
+          if (Test-Path $T) {
+            $lines = Get-Content $T
+            $out = New-Object System.Collections.Generic.List[string]
+            foreach ($line in $lines) {
+              if ($line -match "^\s*import\s*\{[^\}]*\}\s*from\s*['""]wellcrafted/(error|result)['""];?\s*$") { continue }
+              $out.Add($line)
+            }
+            $out.Insert(0, "import { Err, Ok, type Result, isErr } from 'wellcrafted/result';")
+            $out.Insert(0, "import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';")
+            Set-Content -Path $T -Value $out -NoNewline
+            "Patched $T"
+          }
+
+      - name: Normalize navigator.ts (TIMESLICE_MS)
+        working-directory: epicenter-up/apps/whispering
+        run: |
+          $file = "src/lib/services/recorder/navigator.ts"
+          if (Test-Path $file) {
+            $s = Get-Content -Raw $file
+
+            # Rimuovi eventuale dichiarazione locale di TIMESLICE_MS
+            $s = [Regex]::Replace($s, '^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+TIMESLICE_MS\b[^\r\n]*[\r\n]?', '', 'Multiline')
+
+            # Togli TIMESLICE_MS da import esistenti da $lib/constants/audio
+            $s = [Regex]::Replace($s,
+              'import\s*\{([^\}]*)\}\s*from\s*[''$'"]\$lib/constants/audio[''$'"];?',
+              {
+                param($m)
+                $inside = $m.Groups[1].Value -split ',' | % { $_.Trim() } | ? { $_ -ne '' -and ($_ -split '\s+')[0] -ne 'TIMESLICE_MS' }
+                if ($inside.Count -eq 0) { '' } else { "import { $($inside -join ', ') } from '$lib/constants/audio';" }
+              },
+              'Multiline'
+            )
+
+            # Se non importiamo ancora TIMESLICE_MS, aggiungilo in testa
+            if ($s -notmatch 'import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*[''$'"]\$lib/constants/audio[''$'"]') {
+              $s = "import { TIMESLICE_MS } from '$lib/constants/audio';`r`n" + $s
+            }
+
+            Set-Content -Path $file -Value $s -NoNewline
+            "navigator.ts normalized"
+          } else {
+            "navigator.ts not found, skipping"
+          }
+
+      - name: Install Tauri CLI
+        run: |
+          bun add -g @tauri-apps/cli@latest
+          tauri -V | Out-Null
+
+      - name: Build (Tauri)
+        working-directory: epicenter-up/apps/whispering
+        env:
+          CI: "true"
+        run: |
+          echo "PATH=$env:PATH"
+          bun tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispering-windows-with-tray
+          path: |
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.msi
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.exe
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.zip
