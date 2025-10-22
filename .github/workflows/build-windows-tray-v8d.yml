@@ -1,4 +1,4 @@
-name: Build Windows Tray v8e
+name: Build Windows Tray v8f
 
 on:
   workflow_dispatch:
@@ -79,7 +79,7 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: "Prepatch bash (spans + ffmpeg + imports + TIMESLICE_MS + transformer)"
+      - name: "Prepatch (spans, ffmpeg, imports, TIMESLICE_MS, transformer)"
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
@@ -103,16 +103,14 @@ jobs:
           mkshim "src/routes/(config)/+layout/check-ffmpeg.ts"
           mkshim "src/routes/+layout/check-ffmpeg.ts"
 
-          # 3) Patch imports in commands.ts
+          # 3) Patch imports in commands.ts (wellcrafted/result + nanoid)
           C="src/lib/query/commands.ts"
           if [ -f "$C" ]; then
-            # Remove any existing wellcrafted/result import, then add a single standard one at top
             tmp="$(mktemp)"
             grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true
             mv "$tmp" "$C"
             sed -i "1i import { Err, Ok } from 'wellcrafted/result';" "$C"
 
-            # Remove any nanoid import lines (secure/non-secure), add a single non-secure at top
             tmp="$(mktemp)"
             grep -v -E "^[[:space:]]*import[[:space:]]*\{[[:space:]]*nanoid[[:space:]]*\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true
             mv "$tmp" "$C"
@@ -121,17 +119,36 @@ jobs:
             echo "Patched imports in $C"
           fi
 
-          # 4) navigator.ts: ensure import from constants and remove any local const TIMESLICE_MS
+          # 4) navigator.ts — tieni SOLO l'import da constants, rimuovi TUTTE le dichiarazioni locali (anche destrutturazioni)
           N="src/lib/services/recorder/navigator.ts"
           if [ -f "$N" ]; then
+            # Assicura l'import
             if ! grep -q "\$lib/constants/audio" "$N"; then
               sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
             fi
-            sed -E -i '/^[[:space:]]*(export[[:space:]]+)?const[[:space:]]+TIMESLICE_MS/d' "$N"
-            echo "Normalized TIMESLICE_MS in $N"
+            # Rimuovi const/let/var locali e destrutturazioni contenenti TIMESLICE_MS
+            sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+TIMESLICE_MS([[:space:]=,]|$)/d' "$N"
+            sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+\{[^}]*\bTIMESLICE_MS\b[^}]*\}[[:space:]=]/d' "$N"
+            # Se ci sono import multipli dal file constants, rimuovi TIMESLICE_MS da quelli successivi al primo
+            awk '
+              BEGIN{seen=0}
+              {
+                line=$0
+                if (line ~ /from[[:space:]]*'\''\$lib\/constants\/audio'\''|from[[:space:]]*"\$lib\/constants\/audio"/) {
+                  if (line ~ /\{/) {
+                    if (seen==1) {
+                      gsub(/TIMESLICE_MS[[:space:]]*,[[:space:]]*|[[:space:]]*,[[:space:]]*TIMESLICE_MS|TIMESLICE_MS/,"",line)
+                    }
+                    seen=1
+                  }
+                }
+                print line
+              }
+            ' "$N" > "$N.tmp" && mv "$N.tmp" "$N"
+            echo "Fully normalized TIMESLICE_MS in $N"
           fi
 
-          # 5) transformer.ts: dedupe wellcrafted/error import
+          # 5) transformer.ts — dedupe wellcrafted/error import (tiene 1 riga standard in cima)
           T="src/lib/query/transformer.ts"
           if [ -f "$T" ]; then
             tmp="$(mktemp)"
