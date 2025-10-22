@@ -79,7 +79,7 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: "Prepatch bash (spans + ffmpeg + imports + TIMESLICE_MS)"
+      - name: "Prepatch bash (spans + ffmpeg + imports + TIMESLICE_MS + transformer)"
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
@@ -127,9 +127,18 @@ jobs:
             if ! grep -q "\$lib/constants/audio" "$N"; then
               sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
             fi
-            # delete any line declaring const TIMESLICE_MS
             sed -E -i '/^[[:space:]]*(export[[:space:]]+)?const[[:space:]]+TIMESLICE_MS/d' "$N"
             echo "Normalized TIMESLICE_MS in $N"
+          fi
+
+          # 5) transformer.ts: dedupe wellcrafted/error import
+          T="src/lib/query/transformer.ts"
+          if [ -f "$T" ]; then
+            tmp="$(mktemp)"
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/error['\"];?[[:space:]]*$" "$T" > "$tmp" || true
+            mv "$tmp" "$T"
+            sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
+            echo "Patched imports in $T"
           fi
 
       - name: Install Tauri CLI
