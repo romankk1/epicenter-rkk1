@@ -79,7 +79,7 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: Pre-patch (bash: spans, ffmpeg shims, imports, TIMESLICE_MS)
+      - name: "Prepatch bash (spans + ffmpeg + imports + TIMESLICE_MS)"
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
