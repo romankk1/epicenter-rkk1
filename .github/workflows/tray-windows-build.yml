@@ -1,4 +1,4 @@
-name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v4
+name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v5
 
 on:
   workflow_dispatch:
@@ -45,13 +45,37 @@ jobs:
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
-      # ⚠️ Installa NSIS via PowerShell (PATH più affidabile su windows-latest)
-      - name: Install NSIS (for Tauri bundling)
+      # ✅ WiX per MSI
+      - name: Install WiX Toolset (for MSI)
+        shell: pwsh
+        run: |
+          choco install wixtoolset --yes --no-progress
+          $wix='C:\Program Files (x86)\WiX Toolset v3.11\bin'
+          if (Test-Path $wix) {
+            $env:Path = "$env:Path;$wix"
+            & "$wix\candle.exe" -? | Out-Null
+          } else {
+            Write-Error "WiX not found where expected."
+            exit 1
+          }
+
+      # ✅ NSIS per EXE (path corretto)
+      - name: Install NSIS (for EXE)
         shell: pwsh
         run: |
           choco install nsis --yes --no-progress
-          $env:Path
-          & "C:\ProgramData\chocolatey\bin\makensis.exe" -VERSION
+          $nsis1='C:\Program Files (x86)\NSIS\makensis.exe'
+          $nsis2='C:\Program Files\NSIS\makensis.exe'
+          if (Test-Path $nsis1) {
+            & $nsis1 -VERSION
+            $env:Path = "$env:Path;$(Split-Path $nsis1)"
+          } elseif (Test-Path $nsis2) {
+            & $nsis2 -VERSION
+            $env:Path = "$env:Path;$(Split-Path $nsis2)"
+          } else {
+            Write-Error "makensis not found after Chocolatey install."
+            exit 1
+          }
 
       - name: Cache Bun
         uses: actions/cache@v4
@@ -64,15 +88,12 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      # 👉 Installa Tauri CLI globalmente per evitare "command not found"
       - name: Install Tauri CLI (global)
         run: |
           bun add -g @tauri-apps/cli@latest
           bun --version
-          bunx --version || true
           tauri -V || true
 
-      # Build con Bun: due tentativi, prima con 'bun tauri build', poi fallback a bunx
       - name: Build Whispering (Windows + Tray)
         working-directory: epicenter-up/apps/whispering
         env:
@@ -80,12 +101,8 @@ jobs:
         run: |
           echo "PATH=$PATH"
           which bun || true
-          which bunx || true
           which tauri || true
-          # primo tentativo (usa cli globale)
-          bun tauri build || \
-          # fallback: invoca il binario via bunx (sintassi corretta)
-          bunx --bun tauri build
+          bun tauri build || bunx --bun tauri build
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
