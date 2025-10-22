@@ -1,4 +1,4 @@
-name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v2
+name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v3
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
 
     defaults:
       run:
-        shell: bash   # forza bash per tutti gli step "run"
+        shell: bash
 
     steps:
       - name: Checkout (placeholder)
@@ -31,12 +31,9 @@ jobs:
       - name: Merge tray feature preferring tray on conflicts
         run: |
           cd epicenter-up
-          # Configura identità per eventuale commit di merge
           git config user.name "tray-bot"
           git config user.email "tray-bot@users.noreply.github.com"
-          # Unione automatica: in caso di conflitti preferisci le modifiche della tray
           git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
-          # Se ci sono file non indicizzati o merge sospeso, forza l’add + commit
           git add -A || true
           git commit -m "Temp merge: upstream main + tray feature for build" || true
 
@@ -47,6 +44,13 @@ jobs:
 
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
+
+      # 👉 Installiamo NSIS per l'installer .exe di Tauri
+      - name: Install NSIS (for Tauri Windows bundling)
+        run: |
+          choco install nsis --yes --no-progress
+          # verifica
+          makensis -VERSION
 
       - name: Cache Bun
         uses: actions/cache@v4
@@ -59,9 +63,11 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      # usa sempre la CLI tauri via bunx per evitare "tauri: command not found"
+      # usa la CLI tauri via bunx
       - name: Build Whispering (Windows + Tray)
         working-directory: epicenter-up/apps/whispering
+        env:
+          CI: "true"
         run: bunx --bun @tauri-apps/cli@latest tauri build
 
       - name: Upload Windows installer
