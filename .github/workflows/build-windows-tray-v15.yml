@@ -1,4 +1,4 @@
-name: Build Windows Tray v14 (no Vulkan)
+name: Build Windows Tray v15 (force no Vulkan)
 on:
   workflow_dispatch:
 
@@ -10,7 +10,7 @@ jobs:
         shell: pwsh
 
     env:
-      # Disabilita esplicitamente qualsiasi tentativo di usare Vulkan
+      # Blocca eventuali rilevamenti runtime
       WHISPER_VULKAN: "0"
       GGML_NO_VULKAN: "1"
       WHISPER_DONT_GENERATE_BINDINGS: "1"
@@ -35,10 +35,10 @@ jobs:
           bun add -g @tauri-apps/cli
           Write-Host "✅ Tauri CLI installed"
 
-      # --- PRE-PATCHS: shim ffmpeg e piccoli fix non invasivi ---
-      - name: Pre-patch (FFmpeg shim + piccole normalizzazioni)
+      # --- PRE-PATCHS: shim ffmpeg + piccoli fix ---
+      - name: Pre-patch (FFmpeg shim + small normalizations)
         run: |
-          # 1) Crea/aggiorna lo shim di check-ffmpeg
+          # 1) Crea/aggiorna lo shim di check-ffmpeg (nel path corretto)
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
@@ -48,7 +48,7 @@ jobs:
           Set-Content -Path $ffmpegPath -Value $content -NoNewline
           Write-Host "✅ FFmpeg shim at $ffmpegPath"
 
-          # 2) Rimuovi eventuali dichiarazioni duplicate/strane e normalizza import noti
+          # 2) Piccole normalizzazioni note
           $files = @(
             "apps/whispering/src/lib/services/recorder/navigator.ts",
             "apps/whispering/src/lib/query/transformer.ts",
@@ -57,33 +57,64 @@ jobs:
           foreach ($f in $files) {
             if (Test-Path $f) {
               $src = Get-Content $f -Raw
-              # Rimuovi eventuali costanti TIMESLICE_MS locali duplicate
               $src = $src -replace "(?m)^\s*(export\s+)?const\s+TIMESLICE_MS\b[^\r\n]*", ""
-              # Normalizza import da wellcrafted/result
               $src = $src -replace "(?m)^\s*import\s+\{[^\}]*\}\s+from\s+[`"']wellcrafted/result[`"']\s*;", "import { Err, Ok, type Result, isErr } from 'wellcrafted/result';"
-              # Normalizza import da wellcrafted/error
               $src = $src -replace "(?m)^\s*import\s+\{[^\}]*\}\s+from\s+[`"']wellcrafted/error[`"']\s*;", "import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';"
               Set-Content -Path $f -Value $src -NoNewline
               Write-Host "🧩 Patched: $f"
             }
           }
 
-      # --- DISABILITA LA FEATURE VULKAN NEL CARGO.TOML DI TAURI ---
-      - name: Disable Vulkan feature in Tauri Cargo.toml
+      # --- DISABILITA DAVVERO VULKAN: forza default-features = false su whisper-rs e whisper-rs-sys ---
+      - name: Force-disable Vulkan features in Cargo.toml
         run: |
           $cargo = "apps/whispering/src-tauri/Cargo.toml"
           if (-not (Test-Path $cargo)) { throw "Cargo.toml non trovato: $cargo" }
           $text = Get-Content $cargo -Raw
 
-          # Rimuovi eventuale features = ["vulkan", ...]
-          $text = $text -replace 'features\s*=\s*\[(?:[^\]]*vulkan[^\]]*)\]', 'features = []'
-          # Rimuovi eventuali linee di dipendenza che aggiungono la feature vulkan esplicitamente
-          $text = $text -replace '(?m)^(.*whisper-rs.*features\s*=\s*\[[^\]]*vulkan[^\]]*\].*)$', '$1' -replace 'vulkan\s*,?\s*', ''
+          # 1) Se la dipendenza è in forma semplice, trasformala in tabellare con default-features=false
+          #    whisper-rs
+          $text = $text -replace '(?m)^\s*whisper-rs\s*=\s*["''][^"'']+["'']\s*$', 'whisper-rs = { version = "0.11.1", default-features = false, features = [] }'
+          #    whisper-rs-sys
+          $text = $text -replace '(?m)^\s*whisper-rs-sys\s*=\s*["''][^"'']+["'']\s*$', 'whisper-rs-sys = { version = "0.11.1", default-features = false, features = [] }'
+
+          # 2) Se esistono già in formato oggetto, forza default-features=false e rimuovi qualunque feature vulkan
+          #    whisper-rs
+          $text = $text -replace '(?ms)whisper-rs\s*=\s*\{[^\}]*\}', {
+            param($m)
+            $blk = $m.Value
+            $blk = $blk -replace 'default-features\s*=\s*(true|false)', 'default-features = false'
+            if ($blk -notmatch 'default-features') { $blk = $blk.TrimEnd('}') + ', default-features = false }' }
+            # rimuovi "vulkan" da features
+            $blk = $blk -replace '(?ms)features\s*=\s*\[([^\]]*)\]', {
+              param($n)
+              $lst = $n.Groups[1].Value -replace '["'']vulkan["'']\s*,?', '' -replace ',\s*,', ',' -replace '^\s*,|\s*,\s*$', ''
+              "features = [${lst}]"
+            }
+            return $blk
+          }
+
+          #    whisper-rs-sys
+          $text = $text -replace '(?ms)whisper-rs-sys\s*=\s*\{[^\}]*\}', {
+            param($m)
+            $blk = $m.Value
+            $blk = $blk -replace 'default-features\s*=\s*(true|false)', 'default-features = false'
+            if ($blk -notmatch 'default-features') { $blk = $blk.TrimEnd('}') + ', default-features = false }' }
+            $blk = $blk -replace '(?ms)features\s*=\s*\[([^\]]*)\]', {
+              param($n)
+              $lst = $n.Groups[1].Value -replace '["'']vulkan["'']\s*,?', '' -replace ',\s*,', ',' -replace '^\s*,|\s*,\s*$', ''
+              "features = [${lst}]"
+            }
+            return $blk
+          }
+
+          # 3) In qualunque caso, togli riferimenti residuali a "vulkan" (sicurezza)
+          $text = $text -replace '(?i)vulkan', ''
+
           Set-Content -Path $cargo -Value $text -NoNewline
+          Write-Host "✅ Cargo.toml patched to disable Vulkan in whisper-rs & whisper-rs-sys"
 
-          Write-Host "✅ Vulkan feature disabilitata in Cargo.toml"
-
-      # --- BUILD SOLO DELL'APP WHISPERING ---
+      # --- BUILD SOLO WHISPERING ---
       - name: Build Whispering (SSR bundle)
         working-directory: apps/whispering
         run: |
