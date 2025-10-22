@@ -1,5 +1,4 @@
-name: Build Windows Tray v8j
-
+name: Build Windows Tray v8k
 on:
   workflow_dispatch:
 
@@ -79,19 +78,19 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: "Prepatch (spans, ffmpeg shims incl. hasNavigatorLocalTranscriptionIssue, commands.ts, transformer.ts)"
+      - name: Prepatch (spans, ffmpeg shims, commands.ts, transformer.ts)
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
 
-          # 1) Fix self-closing <span />
+          # 1) Fix <span />
           F="src/routes/(config)/settings/transcription/+page.svelte"
           if [ -f "$F" ]; then
             sed -E -i 's#<span([^>]*)/>#<span\1></span>#g' "$F"
             echo "Fixed <span/> in $F"
           fi
 
-          # 2) Create check-ffmpeg shims (both locations) — includono hasNavigatorLocalTranscriptionIssue
+          # 2) check-ffmpeg shim (due posizioni) + export mancante
           mkshim() {
             target="$1"
             if [ ! -f "$target" ]; then
@@ -99,14 +98,10 @@ jobs:
               cat > "$target" <<'TSHIM'
 export type FfmpegCheck = { available: boolean; version?: string; error?: string };
 
-// In CI assumiamo ffmpeg "ok", questo evita branch di warning.
 export async function checkFfmpeg(): Promise<FfmpegCheck> {
   return { available: true, version: 'CI' };
 }
 
-// Alcuni punti della UI importano questa funzione per mostrare un alert
-// su problemi col "navigator" per la trascrizione locale.
-// In CI la facciamo tornare sempre "false" per non bloccare la build.
 export function hasNavigatorLocalTranscriptionIssue(): boolean {
   return false;
 }
@@ -119,74 +114,56 @@ TSHIM
           mkshim "src/routes/(config)/+layout/check-ffmpeg.ts"
           mkshim "src/routes/+layout/check-ffmpeg.ts"
 
-          # 3) Patch imports in commands.ts (wellcrafted/result + nanoid)
+          # 3) commands.ts: dedupe imports
           C="src/lib/query/commands.ts"
           if [ -f "$C" ]; then
-            tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true
-            mv "$tmp" "$C"
+            tmp="$(mktemp)"; grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true; mv "$tmp" "$C"
             sed -i "1i import { Err, Ok } from 'wellcrafted/result';" "$C"
 
-            tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[[:space:]]*nanoid[[:space:]]*\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true
-            mv "$tmp" "$C"
+            tmp="$(mktemp)"; grep -v -E "^[[:space:]]*import[[:space:]]*\{[[:space:]]*nanoid[[:space:]]*\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true; mv "$tmp" "$C"
             sed -i "1i import { nanoid } from 'nanoid/non-secure';" "$C"
-
             echo "Patched imports in $C"
           fi
 
-          # 4) transformer.ts — dedupe both wellcrafted/error and wellcrafted/result
+          # 4) transformer.ts: dedupe imports
           T="src/lib/query/transformer.ts"
           if [ -f "$T" ]; then
-            tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true
-            mv "$tmp" "$T"
+            tmp="$(mktemp)"; grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true; mv "$tmp" "$T"
             sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
             sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
             echo "Patched imports in $T"
           fi
 
-      - name: "Prepatch navigator.ts via Node (safe rewrite)"
+      - name: Prepatch navigator.ts (Node safe rewrite)
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
           cat > prepatch-navigator.mjs <<'EOF'
           import fs from 'fs';
-
           const file = 'src/lib/services/recorder/navigator.ts';
-          if (!fs.existsSync(file)) {
-            console.log('navigator.ts not found, skipping');
-            process.exit(0);
-          }
+          if (!fs.existsSync(file)) { console.log('navigator.ts not found, skipping'); process.exit(0); }
           let s = fs.readFileSync(file, 'utf8');
 
-          // 1) Remove ANY local declaration of TIMESLICE_MS (const/let/var, including destructuring)
+          // rm local decl
           s = s.replace(/^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+TIMESLICE_MS\b[^\n]*$/gm, '');
           s = s.replace(/^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+\{[^}]*\bTIMESLICE_MS\b[^}]*\}[ \t]*=[^\n]*$/gm, '');
 
-          // 2) In ANY import block from $lib/constants/audio, remove TIMESLICE_MS from the specifiers.
+          // rm TIMESLICE_MS from any import list from $lib/constants/audio
           s = s.replace(/import\s*\{([\s\S]*?)\}\s*from\s*['"]\$lib\/constants\/audio['"];?/g, (m, inside) => {
-            const tokens = inside
-              .split(',')
-              .map(t => t.trim())
-              .filter(Boolean)
+            const tokens = inside.split(',').map(t => t.trim()).filter(Boolean)
               .filter(tok => tok.split(/\s+/)[0] !== 'TIMESLICE_MS');
-            if (tokens.length === 0) {
-              return ''; // drop empty import
-            }
+            if (tokens.length === 0) return '';
             return `import { ${tokens.join(', ')} } from '$lib/constants/audio';`;
           });
 
-          // 3) Ensure we have EXACTLY ONE explicit import for TIMESLICE_MS at the very top.
-          const hasTimesliceImport = /import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*['"]\$lib\/constants\/audio['"]/.test(s);
-          if (!hasTimesliceImport) {
+          // ensure single explicit import at top
+          if (!/import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*['"]\$lib\/constants\/audio['"]/.test(s)) {
             s = `import { TIMESLICE_MS } from '$lib/constants/audio';\n` + s;
           }
 
           fs.writeFileSync(file, s);
           console.log('navigator.ts normalized safely');
           EOF
-
           node prepatch-navigator.mjs
 
       - name: Install Tauri CLI
