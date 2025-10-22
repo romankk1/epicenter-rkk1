@@ -1,4 +1,4 @@
-name: Build Windows Tray v8k (slim)
+name: Build Windows Tray v8e
 
 on:
   workflow_dispatch:
@@ -30,7 +30,7 @@ jobs:
           git fetch tray feature/minimize-to-tray
           git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
           git add -A || true
-          git commit -m "Temp merge: upstream main + tray feature for build" || true
+          git commit -m "Temp merge: upstream main + tray feature" || true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -45,109 +45,112 @@ jobs:
         run: |
           choco install wixtoolset --yes --no-progress || $true
           choco install nsis --yes --no-progress || $true
-          $wix1 = 'C:\Program Files (x86)\WiX Toolset v3.14\bin'
-          $wix2 = 'C:\Program Files (x86)\WiX Toolset v3.11\bin'
-          $nsis1 = 'C:\Program Files (x86)\NSIS'
-          $nsis2 = 'C:\Program Files\NSIS'
-          foreach ($p in @($wix1,$wix2,$nsis1,$nsis2)) { if (Test-Path $p) { $env:Path += ';' + $p } }
-          Write-Host "WiX/NSIS PATH ok"
+          $paths = @(
+            'C:\Program Files (x86)\WiX Toolset v3.14\bin',
+            'C:\Program Files (x86)\WiX Toolset v3.11\bin',
+            'C:\Program Files (x86)\NSIS',
+            'C:\Program Files\NSIS'
+          )
+          foreach ($p in $paths) { if (Test-Path $p) { $env:Path += ';' + $p } }
+          Write-Host "WiX/NSIS ready"
 
       - name: Install deps
         working-directory: epicenter-up
         run: bun install
 
-      - name: Prepatch (simple)
+      - name: Prepatch (spans, ffmpeg shims, commands.ts, transformer.ts)
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
 
-          # Fix <span />
+          # 1) Fix self-closing <span />
           F="src/routes/(config)/settings/transcription/+page.svelte"
           if [ -f "$F" ]; then
             sed -E -i 's#<span([^>]*)/>#<span\1></span>#g' "$F"
             echo "Fixed <span/> in $F"
           fi
 
-          # Create check-ffmpeg shims (both paths) with the missing export
+          # 2) check-ffmpeg shims in due posizioni
           mkshim() {
-            tgt="$1"
-            if [ ! -f "$tgt" ]; then
-              mkdir -p "$(dirname "$tgt")"
-              printf "%s\n" \
-"export type FfmpegCheck = { available: boolean; version?: string; error?: string };" \
-"" \
-"export async function checkFfmpeg(): Promise<FfmpegCheck> {" \
-"  return { available: true, version: 'CI' };" \
-"}" \
-"" \
-"export function hasNavigatorLocalTranscriptionIssue(): boolean {" \
-"  return false;" \
-"}" \
-"" \
-"export default checkFfmpeg;" \
-              > "$tgt"
-              echo "Created shim $tgt"
+            target="$1"
+            if [ ! -f "$target" ]; then
+              mkdir -p "$(dirname "$target")"
+              cat > "$target" <<'TSHIM'
+export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+
+// In CI assumiamo ffmpeg "ok" per non bloccare la UI.
+export async function checkFfmpeg(): Promise<FfmpegCheck> {
+  return { available: true, version: 'CI' };
+}
+
+// Alcuni punti della UI importano questa per mostrare avvisi sul navigator.
+// In CI ritorniamo sempre false.
+export function hasNavigatorLocalTranscriptionIssue(): boolean {
+  return false;
+}
+
+export default checkFfmpeg;
+TSHIM
+              echo "Created shim $target"
             fi
           }
           mkshim "src/routes/(config)/+layout/check-ffmpeg.ts"
           mkshim "src/routes/+layout/check-ffmpeg.ts"
 
-          # Dedup commands.ts imports (wellcrafted/result + nanoid)
+          # 3) commands.ts — dedupe imports
           C="src/lib/query/commands.ts"
           if [ -f "$C" ]; then
-            tmp="$(mktemp)"; grep -v -E "^[[:space:]]*import[[:space:]]*\\{[^}]*\\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true; mv "$tmp" "$C"
+            tmp="$(mktemp)"
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true
+            mv "$tmp" "$C"
             sed -i "1i import { Err, Ok } from 'wellcrafted/result';" "$C"
-            tmp="$(mktemp)"; grep -v -E "^[[:space:]]*import[[:space:]]*\\{[[:space:]]*nanoid[[:space:]]*\\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true; mv "$tmp" "$C"
+
+            tmp="$(mktemp)"
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[[:space:]]*nanoid[[:space:]]*\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true
+            mv "$tmp" "$C"
             sed -i "1i import { nanoid } from 'nanoid/non-secure';" "$C"
-            echo "Patched $C"
+            echo "Patched imports in $C"
           fi
 
-          # Dedup transformer.ts imports (wellcrafted/error + result)
+          # 4) transformer.ts — dedupe imports
           T="src/lib/query/transformer.ts"
           if [ -f "$T" ]; then
-            tmp="$(mktemp)"; grep -v -E "^[[:space:]]*import[[:space:]]*\\{[^}]*\\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true; mv "$tmp" "$T"
+            tmp="$(mktemp)"
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true
+            mv "$tmp" "$T"
             sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
             sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
-            echo "Patched $T"
+            echo "Patched imports in $T"
           fi
 
-      - name: Normalize navigator.ts (safe Node rewrite)
+      - name: Normalize navigator.ts
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
-          printf "%s\n" \
-"import fs from 'fs';" \
-"" \
-"const file = 'src/lib/services/recorder/navigator.ts';" \
-"if (!fs.existsSync(file)) { console.log('navigator.ts not found, skipping'); process.exit(0); }" \
-"let s = fs.readFileSync(file, 'utf8');" \
-"" \
-"// Remove any local declaration of TIMESLICE_MS" \
-"s = s.replace(/^[ \\t]*(export[ \\t]+)?(const|let|var)[ \\t]+TIMESLICE_MS\\b[^\\n]*$/gm, '');" \
-"s = s.replace(/^[ \\t]*(export[ \\t]+)?(const|let|var)[ \\t]+\\{[^}]*\\bTIMESLICE_MS\\b[^}]*\\}[ \\t]*=[^\\n]*$/gm, '');" \
-"" \
-"// Remove TIMESLICE_MS from any import list from $lib/constants/audio" \
-"s = s.replace(/import\\s*\\{([\\s\\S]*?)\\}\\s*from\\s*['\"]\\$lib\\/constants\\/audio['\"];?/g, (m, inside) => {" \
-"  const tokens = inside.split(',').map(t => t.trim()).filter(Boolean)" \
-"    .filter(tok => tok.split(/\\s+/)[0] !== 'TIMESLICE_MS');" \
-"  if (tokens.length === 0) return '';" \
-"  return `import { ${tokens.join(', ')} } from '$lib/constants/audio';`;" \
-"});" \
-"" \
-"// Ensure single explicit import at top" \
-"if (!/import\\s*\\{[^}]*\\bTIMESLICE_MS\\b[^}]*\\}\\s*from\\s*['\"]\\$lib\\/constants\\/audio['\"]/ .test(s)) {" \
-"  s = `import { TIMESLICE_MS } from '$lib/constants/audio';\\n` + s;" \
-"}" \
-"" \
-"fs.writeFileSync(file, s);" \
-"console.log('navigator.ts normalized');" \
-          > prepatch-navigator.mjs
-          node prepatch-navigator.mjs
+          node <<'JSFIX'
+import fs from 'fs';
+const file = 'src/lib/services/recorder/navigator.ts';
+if (!fs.existsSync(file)) {
+  console.log('navigator.ts not found, skipping');
+  process.exit(0);
+}
+let s = fs.readFileSync(file, 'utf8');
+s = s.replace(/^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+TIMESLICE_MS\b[^\n]*$/gm, '');
+s = s.replace(/import\s*\{([^\}]*)\}\s*from\s*['"]\$lib\/constants\/audio['"];?/g, (m, inside) => {
+  const tokens = inside.split(',').map(t => t.trim()).filter(Boolean)
+    .filter(tok => tok.split(/\s+/)[0] !== 'TIMESLICE_MS');
+  return tokens.length ? `import { ${tokens.join(', ')} } from '$lib/constants/audio';` : '';
+});
+if (!/import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*['"]\$lib\/constants\/audio['"]/.test(s)) {
+  s = `import { TIMESLICE_MS } from '$lib/constants/audio';\n` + s;
+}
+fs.writeFileSync(file, s);
+console.log('navigator.ts normalized');
+JSFIX
 
       - name: Install Tauri CLI
         run: |
           bun add -g @tauri-apps/cli@latest
-          bun --version
           tauri -V || true
 
       - name: Build (Tauri)
