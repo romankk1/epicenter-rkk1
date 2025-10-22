@@ -1,0 +1,67 @@
+name: Build Windows Tray v10
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          Write-Host "✅ Dependencies installed"
+
+      - name: Pre-patch cleanup & FFmpeg shim
+        run: |
+          $ffmpegPath = "src/routes/(config)/+layout/check-ffmpeg.ts"
+          $ffmpegDir = Split-Path $ffmpegPath
+          if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
+
+          # Contenuto TypeScript codificato Base64 (YAML-safe)
+          $b64 = "ZXhwb3J0IHR5cGUgRmZtcGVnQ2hlY2sgPSB7IGF2YWlsYWJsZTogYm9vbGVhbjsgdmVyc2lvbj86IHN0cmluZzsgZXJyb3I/OiBzdHJpbmcgfTsKCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBjaGVja0ZmbXBlZygpOiBQcm9taXNlPEZmbXBlZ0NoZWNrPiB7IHJldHVybiB7IGF2YWlsYWJsZTogdHJ1ZSwgdmVyc2lvbjogIkNJIiB9OyB9CmV4cG9ydCBmdW5jdGlvbiBoYXNOYXZpZ2F0b3JMb2NhbFRyYW5zY3JpcHRpb25Jc3N1ZSgpOiBib29sZWFuIHsgcmV0dXJuIGZhbHNlOyB9CmV4cG9ydCBkZWZhdWx0IGNoZWNrRmZtcGVnOwo="
+          $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+          Set-Content -Path $ffmpegPath -Value $content -NoNewline
+          Write-Host "✅ FFmpeg shim created in $ffmpegPath"
+
+          # Fix duplicate constants in navigator.ts and transformer.ts
+          $files = @(
+            "apps/whispering/src/lib/services/recorder/navigator.ts",
+            "apps/whispering/src/lib/query/transformer.ts",
+            "apps/whispering/src/lib/query/commands.ts"
+          )
+          foreach ($f in $files) {
+            if (Test-Path $f) {
+              $src = Get-Content $f -Raw
+              $src = $src -replace '(?m)^\s*(export\s+)?const\s+TIMESLICE_MS\b[^\r\n]*', ''
+              $src = $src -replace '(?m)^\s*import\s+\{([^}]*)\}\s+from\s+[\'\"]wellcrafted/result[\'\"]\s*;', 'import { Err, Ok, type Result, isErr } from ''wellcrafted/result'';'
+              $src = $src -replace '(?m)^\s*import\s+\{([^}]*)\}\s+from\s+[\'\"]wellcrafted/error[\'\"]\s*;', 'import { createTaggedError, extractErrorMessage } from ''wellcrafted/error'';'
+              Set-Content -Path $f -Value $src -NoNewline
+              Write-Host "🧩 Patched: $f"
+            }
+          }
+
+      - name: Build Tauri app
+        run: |
+          Write-Host "🚀 Starting Tauri build"
+          bun run build
+          tauri build
+        env:
+          NODE_ENV: production
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-tray-build
+          path: src-tauri/target/release/*.exe
