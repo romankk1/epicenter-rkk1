@@ -1,4 +1,4 @@
-name: Build Windows Tray v10
+name: Build Windows Tray v11
 on:
   workflow_dispatch:
 
@@ -23,19 +23,22 @@ jobs:
           bun install --frozen-lockfile
           Write-Host "✅ Dependencies installed"
 
+      - name: Ensure lucide-svelte is installed
+        run: |
+          bun add lucide-svelte --exact
+          Write-Host "✅ lucide-svelte installed"
+
       - name: Pre-patch cleanup & FFmpeg shim
         run: |
           $ffmpegPath = "src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
 
-          # Contenuto TypeScript codificato Base64 (YAML-safe)
           $b64 = "ZXhwb3J0IHR5cGUgRmZtcGVnQ2hlY2sgPSB7IGF2YWlsYWJsZTogYm9vbGVhbjsgdmVyc2lvbj86IHN0cmluZzsgZXJyb3I/OiBzdHJpbmcgfTsKCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBjaGVja0ZmbXBlZygpOiBQcm9taXNlPEZmbXBlZ0NoZWNrPiB7IHJldHVybiB7IGF2YWlsYWJsZTogdHJ1ZSwgdmVyc2lvbjogIkNJIiB9OyB9CmV4cG9ydCBmdW5jdGlvbiBoYXNOYXZpZ2F0b3JMb2NhbFRyYW5zY3JpcHRpb25Jc3N1ZSgpOiBib29sZWFuIHsgcmV0dXJuIGZhbHNlOyB9CmV4cG9ydCBkZWZhdWx0IGNoZWNrRmZtcGVnOwo="
           $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
           Set-Content -Path $ffmpegPath -Value $content -NoNewline
           Write-Host "✅ FFmpeg shim created in $ffmpegPath"
 
-          # Fix duplicate constants in navigator.ts and transformer.ts
           $files = @(
             "apps/whispering/src/lib/services/recorder/navigator.ts",
             "apps/whispering/src/lib/query/transformer.ts",
@@ -56,7 +59,7 @@ jobs:
         run: |
           Write-Host "🚀 Starting Tauri build"
           bun run build
-          tauri build
+          bun x tauri build
         env:
           NODE_ENV: production
 
