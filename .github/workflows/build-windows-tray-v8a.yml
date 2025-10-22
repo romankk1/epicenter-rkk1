@@ -35,5 +35,40 @@ jobs:
           git add -A || true
           git commit -m "Temp merge: upstream main + tray feature for build" || true
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset --yes --no-progress || $true
+          $candle = (Get-Command candle.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $candle) {
+            $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
+                     ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
+                     Where-Object { Test-Path $_ } |
+                     Select-Object -First 1
+            if ($guess) { $env:Path = "$env:Path;$(Split-Path $guess)" }
+          }
+          Write-Host "WiX check complete"
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          $p1 = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          $p2 = 'C:\Program Files\NSIS\makensis.exe'
+          if (Test-Path $p1) { $env:Path = "$env:Path;$(Split-Path $p1)" }
+          elseif (Test-Path $p2) { $env:Path = "$env:Path;$(Split-Path $p2)" }
+          Write-Host "NSIS check complete"
+
       - name: Done
-        run: echo "prep ok ✅"
+        run: |
+          bun --version
+          rustc --version
+          echo "tooling ok ✅"
