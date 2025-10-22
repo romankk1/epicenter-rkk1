@@ -1,7 +1,8 @@
-name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v7
+name: Build Whispering (Windows) with Tray — v7
 
 on:
   workflow_dispatch:
+
 
 jobs:
   build-tray-windows:
