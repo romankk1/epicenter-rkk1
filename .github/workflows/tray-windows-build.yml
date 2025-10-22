@@ -1,4 +1,4 @@
-name: Build Windows Tray (v7.1)
+name: Build Windows Tray (v8)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,8 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Clone upstream epicenter (latest main)
         run: |
@@ -43,7 +44,6 @@ jobs:
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
-      # WiX (MSI)
       - name: Install WiX Toolset
         shell: pwsh
         run: |
@@ -52,17 +52,17 @@ jobs:
           if (-not $candle) {
             $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
                      ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
-                     Where-Object { Test-Path $_ } | Select-Object -First 1
+                     Where-Object { Test-Path $_ } |
+                     Select-Object -First 1
             if ($guess) { $env:Path = "$env:Path;$(Split-Path $guess)" }
           }
 
-      # NSIS (EXE)
       - name: Install NSIS
         shell: pwsh
         run: |
           choco install nsis --yes --no-progress
-          $p1='C:\Program Files (x86)\NSIS\makensis.exe'
-          $p2='C:\Program Files\NSIS\makensis.exe'
+          $p1 = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          $p2 = 'C:\Program Files\NSIS\makensis.exe'
           if (Test-Path $p1) { $env:Path = "$env:Path;$(Split-Path $p1)" }
           elseif (Test-Path $p2) { $env:Path = "$env:Path;$(Split-Path $p2)" }
 
@@ -77,12 +77,13 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      # Pre-patch: fix <span /> e shim check-ffmpeg se mancante
-      - name: Pre-patch for CI
+      - name: Pre-patch for CI (span + check-ffmpeg)
         working-directory: epicenter-up/apps/whispering
         run: |
           F="src/routes/(config)/settings/transcription/+page.svelte"
-          [ -f "$F" ] && perl -0777 -pe 's/<span([^>]*)\/>/<span$1><\/span>/g' -i "$F"
+          if [ -f "$F" ]; then
+            perl -0777 -pe 's/<span([^>]*)\/>/<span$1><\/span>/g' -i "$F"
+          fi
           T="src/routes/+layout/check-ffmpeg.ts"
           if [ ! -f "$T" ]; then
             mkdir -p "src/routes/+layout"
