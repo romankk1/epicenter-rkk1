@@ -14,7 +14,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ============ CLONE + MERGE FEATURE TRAY ============
       - name: Clone upstream epicenter (latest main)
         run: |
           git clone https://github.com/epicenter-md/epicenter.git epicenter-up
@@ -37,7 +36,6 @@ jobs:
           git add -A || true
           git commit -m "Temp merge: upstream main + tray feature for build" || true
 
-      # ============ TOOLCHAIN ============
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -46,7 +44,7 @@ jobs:
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install WiX Toolset (MSI)
+      - name: Install WiX Toolset
         shell: pwsh
         run: |
           choco install wixtoolset --yes --no-progress || $true
@@ -60,7 +58,7 @@ jobs:
           }
           Write-Host "WiX ready"
 
-      - name: Install NSIS (EXE)
+      - name: Install NSIS
         shell: pwsh
         run: |
           choco install nsis --yes --no-progress
@@ -77,31 +75,36 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('epicenter-up/**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
 
-      - name: Install deps (monorepo)
+      - name: Install deps
         working-directory: epicenter-up
         run: bun install
 
-      # ============ PRE-PATCH SEMPLICE ============
-      - name: Fix self-closing <span/> in +page.svelte
+      - name: Pre-patch for CI (span + check-ffmpeg shims)
         working-directory: epicenter-up/apps/whispering
         run: |
+          # 1) Fix self-closing <span /> in Svelte file (warning -> make explicit)
           F="src/routes/(config)/settings/transcription/+page.svelte"
           if [ -f "$F" ]; then
-            sed -E -i 's#<span([^>]*)/>#<span\1></span>#g' "$F"
+            perl -0777 -pe 's/<span([^>]*)\/>/<span$1><\/span>/g' -i "$F"
           fi
 
-      - name: Ensure check-ffmpeg shim (if missing)
-        working-directory: epicenter-up/apps/whispering
-        run: |
-          T="src/routes/+layout/check-ffmpeg.ts"
-          if [ ! -f "$T" ]; then
-            mkdir -p "src/routes/+layout"
-            echo 'export type FfmpegCheck = { available: boolean; version?: string; error?: string };' > "$T"
-            echo 'export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: "CI" }; }' >> "$T"
-            echo 'export default checkFfmpeg;' >> "$T"
-          fi
+          # 2) Create shims for check-ffmpeg in both possible locations
+          make_shim () {
+            target="$1"
+            if [ ! -f "$target" ]; then
+              mkdir -p "$(dirname "$target")"
+              printf "%s\n" \
+"export type FfmpegCheck = { available: boolean; version?: string; error?: string };" \
+"export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: \"CI\" }; }" \
+"export default checkFfmpeg;" > "$target"
+              echo "Created shim: $target"
+            fi
+          }
+          # a) relative import required by +page.svelte
+          make_shim "src/routes/(config)/+layout/check-ffmpeg.ts"
+          # b) global layout (fallback)
+          make_shim "src/routes/+layout/check-ffmpeg.ts"
 
-      # ============ BUILD TAURI ============
       - name: Install Tauri CLI
         run: |
           bun add -g @tauri-apps/cli@latest
@@ -118,7 +121,6 @@ jobs:
           which tauri || true
           bun tauri build || bunx --bun tauri build
 
-      # ============ ARTIFACTS ============
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
