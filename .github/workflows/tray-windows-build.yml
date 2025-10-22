@@ -118,3 +118,4 @@ TS
             epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.msi
             epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.exe
             epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.zip
+
