@@ -1,4 +1,5 @@
-name: Build Windows Tray v16 (with Vulkan via winget)
+name: Build Windows Tray v16b (Vulkan via winget, robust)
+
 on:
   workflow_dispatch:
 
@@ -10,7 +11,7 @@ jobs:
         shell: pwsh
 
     env:
-      NODE_ENV: "production"
+      NODE_ENV: production
 
     steps:
       - name: Checkout repository
@@ -28,51 +29,37 @@ jobs:
 
       - name: Install Vulkan SDK (LunarG) via winget
         run: |
-          # Aggiorna sorgenti e installa ultimo Vulkan SDK LunarG in silenzioso
           winget source update
           winget install --id LunarG.VulkanSDK --accept-package-agreements --accept-source-agreements --silent
 
-          # Trova la cartella C:\VulkanSDK\<versione>
           $root = "C:\VulkanSDK"
           if (!(Test-Path $root)) { throw "VulkanSDK root non trovato in $root" }
           $dirs = Get-ChildItem $root -Directory | Sort-Object Name -Descending
           if ($dirs.Count -eq 0) { throw "Nessuna versione VulkanSDK trovata in $root" }
           $sdk = $dirs[0].FullName
 
-          # Esporta variabili per questo job
-          echo "VULKAN_SDK=$sdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          echo "VK_SDK_PATH=$sdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-
-          # Aggiorna PATH per headers/bin/lib
-          $bin = Join-Path $sdk "Bin"
-          $lib = Join-Path $sdk "Lib"
-          $include = Join-Path $sdk "Include"
-          echo "PATH=$bin;$Env:PATH" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "VULKAN_SDK=$sdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_SDK_PATH=$sdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "PATH=$($sdk)\Bin;$Env:PATH" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
 
           Write-Host "✅ Vulkan SDK installato in $sdk"
-          Write-Host "VULKAN_SDK=$sdk"
-          Write-Host "BIN=$bin"
-          Write-Host "LIB=$lib"
-          Write-Host "INCLUDE=$include"
 
-      # (Opzionale ma utile) Crea lo shim mancante che Svelte importa in alcune pagine
-      - name: Add FFmpeg check shim (to avoid missing import)
+      - name: Add FFmpeg check shim (safe Base64 write)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
-          $ffmpegDir = Split-Path $ffmpegPath
+          $ffmpegDir  = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
-          $content = @"
-export type FfmpegCheck = { available: boolean; version?: string; error?: string };
 
-export async function checkFfmpeg(): Promise<FfmpegCheck> {
-  return { available: true, version: "CI" };
-}
-export function hasNavigatorLocalTranscriptionIssue(): boolean {
-  return false;
-}
-export default checkFfmpeg;
+          $b64 = @"
+ZXhwb3J0IHR5cGUgRmZtcGVnQ2hlY2sgPSB7IGF2YWlsYWJsZTogYm9vbGVhbjsgdmVyc2lvbj86IHN0cmluZzsg
+ZXJyb3I/OiBzdHJpbmcgfTsKCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBjaGVja0ZmbXBlZygpOiBQcm9taXNlPEZm
+bXBlZ0NoZWNrPiB7IHJldHVybiB7IGF2YWlsYWJsZTogdHJ1ZSwgdmVyc2lvbjogIkNJIiB9OyB9CgovLyBBbGN1
+bmUgU1ZHMjIgY2hlIHN1bGwgU2V0dGluZ3MgdXRpbGl6YXRhIGluIG1vZGUKZXhwb3J0IGZ1bmN0aW9uIGhhc05h
+dmlnYXRvckxvY2FsVHJhbnNjcmlwdGlvbklzc3VlKCk6IGJvb2xlYW4geyByZXR1cm4gZmFsc2U7IH0KCmV4cG9y
+dCBkZWZhdWx0IGNoZWNrRmZtcGVnOwo=
 "@
-          Set-Content -Path $ffmpegPath -Value $content -NoNewline
+          $bytes = [Convert]::FromBase64String(($b64 -replace '\s',''))
+          [IO.File]::WriteAllBytes($ffmpegPath, $bytes)
           Write-Host "✅ FFmpeg shim written at $ffmpegPath"
 
       - name: Install JS deps (root)
@@ -80,8 +67,7 @@ export default checkFfmpeg;
           bun install --frozen-lockfile
           Write-Host "✅ Root deps installed"
 
-      # Costruiamo SOLO Whispering (evita errori da altri pacchetti)
-      - name: Build Whispering (SSR)
+      - name: Build Whispering (SSR only)
         working-directory: apps/whispering
         run: |
           bun run build
@@ -90,10 +76,9 @@ export default checkFfmpeg;
       - name: Build Tauri (Windows)
         working-directory: apps/whispering
         env:
-          # Assicuriamoci che le var Vulkan siano disponibili anche qui
           VULKAN_SDK: ${{ env.VULKAN_SDK }}
           VK_SDK_PATH: ${{ env.VK_SDK_PATH }}
-          NODE_ENV: "production"
+          NODE_ENV: production
         run: |
           tauri build
           Write-Host "✅ Tauri build done"
