@@ -44,9 +44,9 @@ jobs:
           foreach ($f in $files) {
             if (Test-Path $f) {
               $src = Get-Content $f -Raw
-              $src = $src -replace '(?m)^\s*(export\s+)?const\s+TIMESLICE_MS\b[^\r\n]*', ''
-              $src = $src -replace '(?m)^\s*import\s+\{([^}]*)\}\s+from\s+[\'\"]wellcrafted/result[\'\"]\s*;', 'import { Err, Ok, type Result, isErr } from ''wellcrafted/result'';'
-              $src = $src -replace '(?m)^\s*import\s+\{([^}]*)\}\s+from\s+[\'\"]wellcrafted/error[\'\"]\s*;', 'import { createTaggedError, extractErrorMessage } from ''wellcrafted/error'';'
+              $src = $src -replace "(?m)^\s*(export\s+)?const\s+TIMESLICE_MS\b[^\r\n]*", ""
+              $src = $src -replace "(?m)^\s*import\s+\{([^}]*)\}\s+from\s+[`"']wellcrafted/result[`"']\s*;", "import { Err, Ok, type Result, isErr } from 'wellcrafted/result';"
+              $src = $src -replace "(?m)^\s*import\s+\{([^}]*)\}\s+from\s+[`"']wellcrafted/error[`"']\s*;", "import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';"
               Set-Content -Path $f -Value $src -NoNewline
               Write-Host "🧩 Patched: $f"
             }
