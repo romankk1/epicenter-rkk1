@@ -1,5 +1,4 @@
-name: Build Windows Tray v8e
-
+name: Build Windows Tray v9
 on:
   workflow_dispatch:
 
@@ -8,7 +7,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        shell: bash
+        shell: pwsh
 
     steps:
       - name: Checkout
@@ -26,10 +25,10 @@ jobs:
           cd epicenter-up
           git config user.name "tray-bot"
           git config user.email "tray-bot@users.noreply.github.com"
-          git remote add tray https://github.com/vishesh-sachan/epicenter.git || true
+          git remote add tray https://github.com/vishesh-sachan/epicenter.git 2>$null
           git fetch tray feature/minimize-to-tray
           git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
-          git add -A || true
+          git add -A
           git commit -m "Temp merge: upstream main + tray feature" || true
 
       - name: Setup Bun
@@ -41,10 +40,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install WiX & NSIS
-        shell: pwsh
         run: |
-          choco install wixtoolset --yes --no-progress || $true
-          choco install nsis --yes --no-progress || $true
+          choco install wixtoolset --yes --no-progress  | Out-Null
+          choco install nsis        --yes --no-progress  | Out-Null
           $paths = @(
             'C:\Program Files (x86)\WiX Toolset v3.14\bin',
             'C:\Program Files (x86)\WiX Toolset v3.11\bin',
@@ -61,21 +59,20 @@ jobs:
       - name: Prepatch (spans, ffmpeg shims, commands.ts, transformer.ts)
         working-directory: epicenter-up/apps/whispering
         run: |
-          set -e
-
           # 1) Fix self-closing <span />
-          F="src/routes/(config)/settings/transcription/+page.svelte"
-          if [ -f "$F" ]; then
-            sed -E -i 's#<span([^>]*)/>#<span\1></span>#g' "$F"
-            echo "Fixed <span/> in $F"
-          fi
+          $F = "src/routes/(config)/settings/transcription/+page.svelte"
+          if (Test-Path $F) {
+            $s = Get-Content -Raw $F
+            $s = [Regex]::Replace($s, '<span([^>]*)/>', '<span$1></span>')
+            Set-Content -Path $F -Value $s -NoNewline
+            "Fixed <span/> in $F"
+          }
 
-          # 2) check-ffmpeg shims in due posizioni
-          mkshim() {
-            target="$1"
-            if [ ! -f "$target" ]; then
-              mkdir -p "$(dirname "$target")"
-              cat > "$target" <<'TSHIM'
+          # 2) check-ffmpeg shims (due posizioni) con export mancante
+          function Write-Shim($TargetPath) {
+            if (-not (Test-Path $TargetPath)) {
+              New-Item -ItemType Directory -Force -Path (Split-Path $TargetPath) | Out-Null
+              $shim = @'
 export type FfmpegCheck = { available: boolean; version?: string; error?: string };
 
 // In CI assumiamo ffmpeg "ok" per non bloccare la UI.
@@ -90,78 +87,89 @@ export function hasNavigatorLocalTranscriptionIssue(): boolean {
 }
 
 export default checkFfmpeg;
-TSHIM
-              echo "Created shim $target"
-            fi
+'@
+              Set-Content -Path $TargetPath -Value $shim -NoNewline
+              "Created shim $TargetPath"
+            }
           }
-          mkshim "src/routes/(config)/+layout/check-ffmpeg.ts"
-          mkshim "src/routes/+layout/check-ffmpeg.ts"
+          Write-Shim "src/routes/(config)/+layout/check-ffmpeg.ts"
+          Write-Shim "src/routes/+layout/check-ffmpeg.ts"
 
-          # 3) commands.ts — dedupe imports
-          C="src/lib/query/commands.ts"
-          if [ -f "$C" ]; then
-            tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true
-            mv "$tmp" "$C"
-            sed -i "1i import { Err, Ok } from 'wellcrafted/result';" "$C"
+          # 3) commands.ts — dedupe imports (wellcrafted/result + nanoid)
+          $C = "src/lib/query/commands.ts"
+          if (Test-Path $C) {
+            $lines = Get-Content $C
+            $out = New-Object System.Collections.Generic.List[string]
+            foreach ($line in $lines) {
+              if ($line -match "^\s*import\s*\{[^\}]*\}\s*from\s*['""]wellcrafted/result['""];?\s*$") { continue }
+              if ($line -match "^\s*import\s*\{\s*nanoid\s*\}\s*from\s*['""]nanoid(\/non-secure)?['""];?\s*$")   { continue }
+              $out.Add($line)
+            }
+            $out.Insert(0, "import { nanoid } from 'nanoid/non-secure';")
+            $out.Insert(0, "import { Err, Ok } from 'wellcrafted/result';")
+            Set-Content -Path $C -Value $out -NoNewline
+            "Patched $C"
+          }
 
-            tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[[:space:]]*nanoid[[:space:]]*\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true
-            mv "$tmp" "$C"
-            sed -i "1i import { nanoid } from 'nanoid/non-secure';" "$C"
-            echo "Patched imports in $C"
-          fi
+          # 4) transformer.ts — dedupe imports (wellcrafted/error + result)
+          $T = "src/lib/query/transformer.ts"
+          if (Test-Path $T) {
+            $lines = Get-Content $T
+            $out = New-Object System.Collections.Generic.List[string]
+            foreach ($line in $lines) {
+              if ($line -match "^\s*import\s*\{[^\}]*\}\s*from\s*['""]wellcrafted/(error|result)['""];?\s*$") { continue }
+              $out.Add($line)
+            }
+            $out.Insert(0, "import { Err, Ok, type Result, isErr } from 'wellcrafted/result';")
+            $out.Insert(0, "import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';")
+            Set-Content -Path $T -Value $out -NoNewline
+            "Patched $T"
+          }
 
-          # 4) transformer.ts — dedupe imports
-          T="src/lib/query/transformer.ts"
-          if [ -f "$T" ]; then
-            tmp="$(mktemp)"
-            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true
-            mv "$tmp" "$T"
-            sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
-            sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
-            echo "Patched imports in $T"
-          fi
-
-      - name: Normalize navigator.ts
+      - name: Normalize navigator.ts (TIMESLICE_MS)
         working-directory: epicenter-up/apps/whispering
         run: |
-          set -e
-          node <<'JSFIX'
-import fs from 'fs';
-const file = 'src/lib/services/recorder/navigator.ts';
-if (!fs.existsSync(file)) {
-  console.log('navigator.ts not found, skipping');
-  process.exit(0);
-}
-let s = fs.readFileSync(file, 'utf8');
-s = s.replace(/^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+TIMESLICE_MS\b[^\n]*$/gm, '');
-s = s.replace(/import\s*\{([^\}]*)\}\s*from\s*['"]\$lib\/constants\/audio['"];?/g, (m, inside) => {
-  const tokens = inside.split(',').map(t => t.trim()).filter(Boolean)
-    .filter(tok => tok.split(/\s+/)[0] !== 'TIMESLICE_MS');
-  return tokens.length ? `import { ${tokens.join(', ')} } from '$lib/constants/audio';` : '';
-});
-if (!/import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*['"]\$lib\/constants\/audio['"]/.test(s)) {
-  s = `import { TIMESLICE_MS } from '$lib/constants/audio';\n` + s;
-}
-fs.writeFileSync(file, s);
-console.log('navigator.ts normalized');
-JSFIX
+          $file = "src/lib/services/recorder/navigator.ts"
+          if (Test-Path $file) {
+            $s = Get-Content -Raw $file
+
+            # Rimuovi eventuale dichiarazione locale di TIMESLICE_MS
+            $s = [Regex]::Replace($s, '^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+TIMESLICE_MS\b[^\r\n]*[\r\n]?', '', 'Multiline')
+
+            # Togli TIMESLICE_MS da import esistenti da $lib/constants/audio
+            $s = [Regex]::Replace($s,
+              'import\s*\{([^\}]*)\}\s*from\s*[''$'"]\$lib/constants/audio[''$'"];?',
+              {
+                param($m)
+                $inside = $m.Groups[1].Value -split ',' | % { $_.Trim() } | ? { $_ -ne '' -and ($_ -split '\s+')[0] -ne 'TIMESLICE_MS' }
+                if ($inside.Count -eq 0) { '' } else { "import { $($inside -join ', ') } from '$lib/constants/audio';" }
+              },
+              'Multiline'
+            )
+
+            # Se non importiamo ancora TIMESLICE_MS, aggiungilo in testa
+            if ($s -notmatch 'import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*[''$'"]\$lib/constants/audio[''$'"]') {
+              $s = "import { TIMESLICE_MS } from '$lib/constants/audio';`r`n" + $s
+            }
+
+            Set-Content -Path $file -Value $s -NoNewline
+            "navigator.ts normalized"
+          } else {
+            "navigator.ts not found, skipping"
+          }
 
       - name: Install Tauri CLI
         run: |
           bun add -g @tauri-apps/cli@latest
-          tauri -V || true
+          tauri -V | Out-Null
 
       - name: Build (Tauri)
         working-directory: epicenter-up/apps/whispering
         env:
           CI: "true"
         run: |
-          echo "PATH=$PATH"
-          which bun || true
-          which tauri || true
-          bun tauri build || bunx --bun tauri build
+          echo "PATH=$env:PATH"
+          bun tauri build
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
