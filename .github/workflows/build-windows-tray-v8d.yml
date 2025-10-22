@@ -1,4 +1,4 @@
-name: Build Windows Tray v8h
+name: Build Windows Tray v8i
 
 on:
   workflow_dispatch:
@@ -79,7 +79,7 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: "Prepatch (spans, ffmpeg, imports, navigator, transformer)"
+      - name: "Prepatch (spans, ffmpeg, commands.ts, transformer.ts)"
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
@@ -119,46 +119,7 @@ jobs:
             echo "Patched imports in $C"
           fi
 
-          # 4) navigator.ts — rimuovi QUALSIASI dichiarazione locale e QUALSIASI presenza di TIMESLICE_MS in import multi-line
-          N="src/lib/services/recorder/navigator.ts"
-          if [ -f "$N" ]; then
-            # Assicura un singolo import esplicito di TIMESLICE_MS add-on (lo mettiamo in cima)
-            if ! grep -q "\$lib/constants/audio" "$N"; then
-              sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
-            else
-              # Aggiungi comunque un import standalone di TIMESLICE_MS in cima: poi lo togliamo dalle altre import lists
-              grep -q "import[[:space:]]*\{[^{]*TIMESLICE_MS" "$N" || sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
-            fi
-
-            # 4a) elimina qualunque dichiarazione locale (const/let/var, anche destrutturazioni)
-            sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+TIMESLICE_MS([[:space:]=,]|$)/d' "$N"
-            sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+\{[^}]*\bTIMESLICE_MS\b[^}]*\}[[:space:]=]/d' "$N"
-
-            # 4b) RIMUOVI TIMESLICE_MS da TUTTI i blocchi import che puntano a $lib/constants/audio (anche multi-line)
-            #    - Applichiamo la pulizia su ogni riga compresa tra "import {" e la riga "from '$lib/constants/audio'"
-            #    - Poi ripuliamo virgole e parentesi residue.
-            awk '
-              BEGIN { inblk=0 }
-              {
-                line=$0
-                if (inblk==0 && line ~ /^[[:space:]]*import[[:space:]]*\{/ ) { inblk=1 }
-                if (inblk==1) {
-                  # se nella riga compare TIMESLICE_MS, rimuovi token + eventuali virgole e spazi
-                  gsub(/(^|[[:space:]]|,)[[:space:]]*TIMESLICE_MS([[:space:]]*,|[[:space:]]|$)/,"\\1",line)
-                  # comprimi doppie virgole / "{ ,", ", }"
-                  gsub(/\{[[:space:]]*,[[:space:]]*/,"{",line)
-                  gsub(/[[:space:]]*,[[:space:]]*\}/,"}",line)
-                  gsub(/,[[:space:]]*,/,", ",line)
-                }
-                print line
-                if (inblk==1 && line ~ /from[[:space:]]*['""]\$lib\/constants\/audio['""]/ ) { inblk=0 }
-              }
-            ' "$N" > "$N.tmp" && mv "$N.tmp" "$N"
-
-            echo "Navigator imports cleaned in $N"
-          fi
-
-          # 5) transformer.ts — dedupe both wellcrafted/error and wellcrafted/result
+          # 4) transformer.ts — dedupe both wellcrafted/error and wellcrafted/result
           T="src/lib/query/transformer.ts"
           if [ -f "$T" ]; then
             tmp="$(mktemp)"
@@ -169,6 +130,49 @@ jobs:
             sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
             echo "Patched imports in $T"
           fi
+
+      - name: "Prepatch navigator.ts via Node (safe rewrite)"
+        working-directory: epicenter-up/apps/whispering
+        run: |
+          set -e
+          cat > prepatch-navigator.mjs <<'EOF'
+          import fs from 'fs';
+
+          const file = 'src/lib/services/recorder/navigator.ts';
+          if (!fs.existsSync(file)) {
+            console.log('navigator.ts not found, skipping');
+            process.exit(0);
+          }
+          let s = fs.readFileSync(file, 'utf8');
+
+          // 1) Remove ANY local declaration of TIMESLICE_MS (const/let/var, including destructuring)
+          s = s.replace(/^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+TIMESLICE_MS\b[^\n]*$/gm, '');
+          s = s.replace(/^[ \t]*(export[ \t]+)?(const|let|var)[ \t]+\{[^}]*\bTIMESLICE_MS\b[^}]*\}[ \t]*=[^\n]*$/gm, '');
+
+          // 2) In ANY import block from $lib/constants/audio, remove TIMESLICE_MS from the specifiers.
+          s = s.replace(/import\s*\{([\s\S]*?)\}\s*from\s*['"]\$lib\/constants\/audio['"];?/g, (m, inside) => {
+            const tokens = inside
+              .split(',')
+              .map(t => t.trim())
+              .filter(Boolean)
+              .filter(tok => tok.split(/\s+/)[0] !== 'TIMESLICE_MS');
+            if (tokens.length === 0) {
+              return ''; // drop empty import
+            }
+            return `import { ${tokens.join(', ')} } from '$lib/constants/audio';`;
+          });
+
+          // 3) Ensure we have EXACTLY ONE explicit import for TIMESLICE_MS at the very top.
+          const hasTimesliceImport = /import\s*\{[^}]*\bTIMESLICE_MS\b[^}]*\}\s*from\s*['"]\$lib\/constants\/audio['"]/.test(s);
+          if (!hasTimesliceImport) {
+            s = `import { TIMESLICE_MS } from '$lib/constants/audio';\n` + s;
+          }
+
+          fs.writeFileSync(file, s);
+          console.log('navigator.ts normalized safely');
+          EOF
+
+          node prepatch-navigator.mjs
 
       - name: Install Tauri CLI
         run: |
