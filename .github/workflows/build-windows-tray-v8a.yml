@@ -4,8 +4,25 @@ on:
   workflow_dispatch:
 
 jobs:
-  ping:
-    runs-on: ubuntu-latest
+  prep:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Say hi
-        run: echo "workflow loaded ✅"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Quick echo
+        run: |
+          bun --version
+          rustc --version
+          echo "prep ok ✅"
