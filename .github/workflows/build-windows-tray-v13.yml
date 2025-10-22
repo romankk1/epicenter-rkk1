@@ -1,4 +1,4 @@
-name: Build Windows Tray v12
+name: Build Windows Tray v13
 on:
   workflow_dispatch:
 
@@ -23,24 +23,42 @@ jobs:
           bun install --frozen-lockfile
           Write-Host "✅ Dependencies installed"
 
-      - name: Ensure required packages
+      - name: Ensure required packages (lucide + tauri cli)
         run: |
           bun add lucide-svelte --exact
           bun add -g @tauri-apps/cli
           Write-Host "✅ lucide-svelte & tauri CLI installed"
 
+      - name: Install Vulkan SDK (required by whisper-rs-sys)
+        run: |
+          choco install vulkan-sdk --yes --no-progress
+          # Trova la versione più recente installata in C:\VulkanSDK e setta VULKAN_SDK
+          $vulkans = Get-ChildItem -Path "C:\VulkanSDK" -Directory -ErrorAction SilentlyContinue
+          if (-not $vulkans -or $vulkans.Count -eq 0) {
+            throw "Vulkan SDK non trovato dopo l'installazione."
+          }
+          $latest = $vulkans | Sort-Object Name -Descending | Select-Object -First 1
+          $Env:VULKAN_SDK = $latest.FullName
+          # Aggiungi la cartella Bin al PATH di questa sessione
+          $binPath = Join-Path $Env:VULKAN_SDK "Bin"
+          $Env:PATH = "$binPath;$Env:PATH"
+          Write-Host "✅ VULKAN_SDK=$Env:VULKAN_SDK"
+          Write-Host "✅ PATH updated with $binPath"
+
       - name: Pre-patch cleanup & FFmpeg shim
         run: |
-          # Percorso corretto: dentro apps/whispering
+          # Percorso corretto dentro apps/whispering
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
 
+          # Contenuto TS (base64, YAML-safe)
           $b64 = "ZXhwb3J0IHR5cGUgRmZtcGVnQ2hlY2sgPSB7IGF2YWlsYWJsZTogYm9vbGVhbjsgdmVyc2lvbj86IHN0cmluZzsgZXJyb3I/OiBzdHJpbmcgfTsKCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBjaGVja0ZmbXBlZygpOiBQcm9taXNlPEZmbXBlZ0NoZWNrPiB7IHJldHVybiB7IGF2YWlsYWJsZTogdHJ1ZSwgdmVyc2lvbjogIkNJIiB9OyB9CmV4cG9ydCBmdW5jdGlvbiBoYXNOYXZpZ2F0b3JMb2NhbFRyYW5zY3JpcHRpb25Jc3N1ZSgpOiBib29sZWFuIHsgcmV0dXJuIGZhbHNlOyB9CmV4cG9ydCBkZWZhdWx0IGNoZWNrRmZtcGVnOwo="
           $content = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
           Set-Content -Path $ffmpegPath -Value $content -NoNewline
           Write-Host "✅ FFmpeg shim created at $ffmpegPath"
 
+          # Piccole normalizzazioni per evitare duplicati/imports strani
           $files = @(
             "apps/whispering/src/lib/services/recorder/navigator.ts",
             "apps/whispering/src/lib/query/transformer.ts",
@@ -64,9 +82,10 @@ jobs:
           bun x tauri build
         env:
           NODE_ENV: production
+          VULKAN_SDK: ${{ env.VULKAN_SDK }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-tray-build
-          path: src-tauri/target/release/*.exe
+          path: apps/whispering/src-tauri/target/release/*.exe
