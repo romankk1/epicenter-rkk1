@@ -79,11 +79,20 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: Pre-patch with Node (span + check-ffmpeg shims)
+      - name: Pre-patch (Svelte spans, ffmpeg shims, dedupe nanoid, dedupe TIMESLICE_MS)
         working-directory: epicenter-up/apps/whispering
         run: |
+          # 1) Fix <span /> in Svelte
           node -e "const fs=require('fs');const p='src/routes/(config)/settings/transcription/+page.svelte';if(fs.existsSync(p)){let s=fs.readFileSync(p,'utf8');s=s.replace(/<span([^>]*)\/>/g,'<span$1></span>');fs.writeFileSync(p,s);console.log('Fixed <span/> in',p);}"
-          node -e "const fs=require('fs'),path=require('path');const w=t=>{if(!fs.existsSync(t)){fs.mkdirSync(path.dirname(t),{recursive:true});fs.writeFileSync(t,'export type FfmpegCheck={available:boolean;version?:string;error?:string}; export async function checkFfmpeg():Promise<FfmpegCheck>{return{available:true,version:\\\"CI\\\"}}; export default checkFfmpeg;');console.log('Created shim',t);}};w('src/routes/(config)/+layout/check-ffmpeg.ts');w('src/routes/+layout/check-ffmpeg.ts');"
+
+          # 2) Shims per check-ffmpeg in ENTRAMBI i percorsi possibili
+          node -e "const fs=require('fs'),path=require('path');const write=(t)=>{if(!fs.existsSync(t)){fs.mkdirSync(path.dirname(t),{recursive:true});fs.writeFileSync(t,'export type FfmpegCheck={available:boolean;version?:string;error?:string}; export async function checkFfmpeg():Promise<FfmpegCheck>{return{available:true,version:\\\"CI\\\"}}; export default checkFfmpeg;');console.log('Created shim',t);}};write('src/routes/(config)/+layout/check-ffmpeg.ts');write('src/routes/+layout/check-ffmpeg.ts');"
+
+          # 3) DEDUPE nanoid in src/lib/query/commands.ts (tieni solo nanoid/non-secure)
+          node -e "const fs=require('fs');const p='src/lib/query/commands.ts';if(fs.existsSync(p)){let s=fs.readFileSync(p,'utf8');let lines=s.split(/\\r?\\n/);let seen=false;lines=lines.filter(l=>{const m=/^\\s*import\\s*\\{\\s*nanoid\\s*\\}\\s*from\\s*['\\\"]nanoid(\\/non-secure)?['\\\"];?\\s*$/.test(l);if(m){if(seen)return false;seen=true;return true;}return true;});s=lines.join('\\n');s=s.replace(/from\\s*['\\\"]nanoid['\\\"]/g,'from \"nanoid/non-secure\"');fs.writeFileSync(p,s);console.log('Deduped nanoid import in',p);}"
+
+          # 4) DEDUPE TIMESLICE_MS in navigator.ts (rimuovi const se già importato dai constants)
+          node -e "const fs=require('fs');const p='src/lib/services/recorder/navigator.ts';if(fs.existsSync(p)){let s=fs.readFileSync(p,'utf8');const hasImport=/from\\s*['\\\"]\\$lib\\/constants\\/audio['\\\"]/m.test(s)&&/\\bTIMESLICE_MS\\b/.test(s);if(hasImport){s=s.replace(/^\\s*(export\\s+)?const\\s+TIMESLICE_MS\\s*=.*$/mg,'');fs.writeFileSync(p,s);console.log('Removed local TIMESLICE_MS in',p);}}"
 
       - name: Install Tauri CLI
         run: |
