@@ -15,9 +15,10 @@ jobs:
 
       - name: Prepatch safe FFmpeg shim
         run: |
-          $path = "src/routes/(config)/+layout/check-ffmpeg.ts"
-          if (-not (Test-Path $path)) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
+          $file = "src/routes/(config)/+layout/check-ffmpeg.ts"
+          $dir = Split-Path $file
+          if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
           }
 
           $content = @'
@@ -36,8 +37,8 @@ export function hasNavigatorLocalTranscriptionIssue(): boolean {
 export default checkFfmpeg;
 '@
 
-          Set-Content -Path $path -Value $content -NoNewline
-          Write-Host "✅ Creato shim valido in $path"
+          Set-Content -Path $file -Value $content -NoNewline
+          Write-Host "✅ Creato shim valido in $file"
 
-      - name: Test build
-        run: echo "Workflow attivo e valido"
+      - name: Test YAML validity
+        run: echo "✅ Workflow attivo e funzionante"
