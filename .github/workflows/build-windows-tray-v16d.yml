@@ -1,4 +1,4 @@
-name: Build Windows Tray v16d (winget Vulkan, safe shim)
+name: Build Windows Tray v17 (CPU-only, no Vulkan)
 
 on:
   workflow_dispatch:
@@ -11,6 +11,10 @@ jobs:
         shell: pwsh
     env:
       NODE_ENV: production
+      # Hard-kill any attempt to use Vulkan in build scripts
+      WHISPER_DONT_USE_VULKAN: "1"
+      WHISPER_RS_SYS_NO_VULKAN: "1"
+      WHISPER_RS_NO_VULKAN: "1"
 
     steps:
       - name: Checkout repository
@@ -26,21 +30,8 @@ jobs:
           bun add -g @tauri-apps/cli
           tauri -V
 
-      - name: Install Vulkan SDK (LunarG) via winget
-        run: |
-          winget source update
-          winget install --id LunarG.VulkanSDK --accept-package-agreements --accept-source-agreements --silent
-          $root = "C:\VulkanSDK"
-          if (!(Test-Path $root)) { throw "VulkanSDK root non trovato in $root" }
-          $dirs = Get-ChildItem $root -Directory | Sort-Object Name -Descending
-          if ($dirs.Count -eq 0) { throw "Nessuna versione VulkanSDK trovata in $root" }
-          $sdk = $dirs[0].FullName
-          "VULKAN_SDK=$sdk"   | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          "VK_SDK_PATH=$sdk"  | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          "PATH=$($sdk)\Bin;$Env:PATH" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "✅ Vulkan SDK in $sdk"
-
-      - name: Add FFmpeg check shim (line-by-line, no YAML tricks)
+      # Shim FFmpeg check to avoid missing-file import during SSR build
+      - name: Add FFmpeg check shim (line-by-line)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir  = Split-Path $ffmpegPath
@@ -56,6 +47,51 @@ jobs:
           Add-Content -Path $ffmpegPath -Value 'export default checkFfmpeg;'
           Write-Host "✅ Shim scritto in $ffmpegPath"
 
+      # Patch Cargo.toml to ensure Vulkan feature is disabled
+      - name: Disable Vulkan features in Cargo.toml (CPU-only)
+        working-directory: apps/whispering/src-tauri
+        run: |
+          $file = "Cargo.toml"
+          if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in $(Get-Location)" }
+          $text = Get-Content $file -Raw
+
+          # 1) Rimuovi "vulkan" dalle liste features (whisper-rs o whisper-rs-sys)
+          $text = $text -replace 'features\s*=\s*\[([^\]]*?)\]', {
+            param($m)
+            $inner = $m.Groups[1].Value
+            # togli eventuali "vulkan"
+            $clean = ($inner -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -notmatch '"vulkan"' }
+            'features = [' + ($clean -join ', ') + ']'
+          }
+
+          # 2) Assicurati default-features = false sui pacchetti whisper-rs e whisper-rs-sys
+          function EnsureDefaultFeaturesFalse($toml, $pkg) {
+            # cerca la riga del pacchetto in forma inline table: pkg = { ... }
+            $pattern = "(?ms)^\s*$pkg\s*=\s*\{[^}]*\}"
+            if ($toml -match $pattern) {
+              $toml = $toml -replace $pattern, {
+                param($mm)
+                $blk = $mm.Value
+                if ($blk -notmatch 'default-features\s*=') {
+                  # inserisci default-features=false prima della chiusura
+                  $blk = $blk -replace '\}\s*$', ', default-features = false }'
+                } else {
+                  # forza a false
+                  $blk = $blk -replace 'default-features\s*=\s*\w+', 'default-features = false'
+                }
+                $blk
+              }
+            }
+            return $toml
+          }
+
+          $text = EnsureDefaultFeaturesFalse $text 'whisper-rs'
+          $text = EnsureDefaultFeaturesFalse $text 'whisper-rs-sys'
+
+          # 3) Salva solo se cambiato
+          Set-Content -Path $file -Value $text -Encoding UTF8
+          Write-Host "✅ Cargo.toml patchato per CPU-only (no Vulkan)"
+
       - name: Install JS deps (root)
         run: |
           bun install --frozen-lockfile
@@ -67,15 +103,16 @@ jobs:
           bun run build
           Write-Host "✅ Whispering SSR built"
 
-      - name: Build Tauri (Windows)
+      - name: Build Tauri (Windows, CPU-only)
         working-directory: apps/whispering
         env:
-          VULKAN_SDK: ${{ env.VULKAN_SDK }}
-          VK_SDK_PATH: ${{ env.VK_SDK_PATH }}
           NODE_ENV: production
+          WHISPER_DONT_USE_VULKAN: ${{ env.WHISPER_DONT_USE_VULKAN }}
+          WHISPER_RS_SYS_NO_VULKAN: ${{ env.WHISPER_RS_SYS_NO_VULKAN }}
+          WHISPER_RS_NO_VULKAN: ${{ env.WHISPER_RS_NO_VULKAN }}
         run: |
           tauri build
-          Write-Host "✅ Tauri build done"
+          Write-Host "✅ Tauri build done (CPU-only)"
 
       - name: Upload artifact (.exe)
         uses: actions/upload-artifact@v4
