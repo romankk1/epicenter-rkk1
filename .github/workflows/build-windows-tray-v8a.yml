@@ -4,14 +4,37 @@ on:
   workflow_dispatch:
 
 jobs:
-  prep:
+  build:
     runs-on: windows-latest
     defaults:
       run:
         shell: bash
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Clone upstream epicenter (latest main)
+        run: |
+          git clone https://github.com/epicenter-md/epicenter.git epicenter-up
+          cd epicenter-up
+          git fetch --all --prune
+          git checkout origin/main -B tray-build
+
+      - name: Add tray feature remote & fetch
+        run: |
+          cd epicenter-up
+          git remote add tray https://github.com/vishesh-sachan/epicenter.git
+          git fetch tray feature/minimize-to-tray
+
+      - name: Merge tray feature preferring tray on conflicts
+        run: |
+          cd epicenter-up
+          git config user.name "tray-bot"
+          git config user.email "tray-bot@users.noreply.github.com"
+          git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
+          git add -A || true
+          git commit -m "Temp merge: upstream main + tray feature for build" || true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -21,8 +44,77 @@ jobs:
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Quick echo
+      - name: Install WiX Toolset
+        shell: pwsh
         run: |
+          choco install wixtoolset --yes --no-progress || $true
+          $candle = (Get-Command candle.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $candle) {
+            $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
+                     ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
+                     Where-Object { Test-Path $_ } |
+                     Select-Object -First 1
+            if ($guess) { $env:Path = "$env:Path;$(Split-Path $guess)" }
+          }
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          $p1 = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          $p2 = 'C:\Program Files\NSIS\makensis.exe'
+          if (Test-Path $p1) { $env:Path = "$env:Path;$(Split-Path $p1)" }
+          elseif (Test-Path $p2) { $env:Path = "$env:Path;$(Split-Path $p2)" }
+
+      - name: Cache Bun
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('epicenter-up/**/bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Install deps
+        working-directory: epicenter-up
+        run: bun install
+
+      - name: Pre-patch for CI (span + check-ffmpeg)
+        working-directory: epicenter-up/apps/whispering
+        run: |
+          F="src/routes/(config)/settings/transcription/+page.svelte"
+          if [ -f "$F" ]; then
+            perl -0777 -pe 's/<span([^>]*)\/>/<span$1><\/span>/g' -i "$F"
+          fi
+          T="src/routes/+layout/check-ffmpeg.ts"
+          if [ ! -f "$T" ]; then
+            mkdir -p "src/routes/+layout"
+            cat > "$T" <<'TS'
+export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: "CI" }; }
+export default checkFfmpeg;
+TS
+          fi
+
+      - name: Install Tauri CLI
+        run: |
+          bun add -g @tauri-apps/cli@latest
           bun --version
-          rustc --version
-          echo "prep ok ✅"
+          tauri -V || true
+
+      - name: Build (Tauri)
+        working-directory: epicenter-up/apps/whispering
+        env:
+          CI: "true"
+        run: |
+          echo "PATH=$PATH"
+          which bun || true
+          which tauri || true
+          bun tauri build || bunx --bun tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispering-windows-with-tray
+          path: |
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.msi
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.exe
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.zip
