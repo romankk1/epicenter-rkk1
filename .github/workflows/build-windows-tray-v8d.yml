@@ -1,4 +1,4 @@
-name: Build Windows Tray v8i
+name: Build Windows Tray v8j
 
 on:
   workflow_dispatch:
@@ -79,7 +79,7 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: "Prepatch (spans, ffmpeg, commands.ts, transformer.ts)"
+      - name: "Prepatch (spans, ffmpeg shims incl. hasNavigatorLocalTranscriptionIssue, commands.ts, transformer.ts)"
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
@@ -91,12 +91,28 @@ jobs:
             echo "Fixed <span/> in $F"
           fi
 
-          # 2) Create check-ffmpeg shims (both locations)
+          # 2) Create check-ffmpeg shims (both locations) — includono hasNavigatorLocalTranscriptionIssue
           mkshim() {
             target="$1"
             if [ ! -f "$target" ]; then
               mkdir -p "$(dirname "$target")"
-              printf "export type FfmpegCheck = { available: boolean; version?: string; error?: string };\nexport async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: 'CI' }; }\nexport default checkFfmpeg;\n" > "$target"
+              cat > "$target" <<'TSHIM'
+export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+
+// In CI assumiamo ffmpeg "ok", questo evita branch di warning.
+export async function checkFfmpeg(): Promise<FfmpegCheck> {
+  return { available: true, version: 'CI' };
+}
+
+// Alcuni punti della UI importano questa funzione per mostrare un alert
+// su problemi col "navigator" per la trascrizione locale.
+// In CI la facciamo tornare sempre "false" per non bloccare la build.
+export function hasNavigatorLocalTranscriptionIssue(): boolean {
+  return false;
+}
+
+export default checkFfmpeg;
+TSHIM
               echo "Created shim $target"
             fi
           }
@@ -125,7 +141,6 @@ jobs:
             tmp="$(mktemp)"
             grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true
             mv "$tmp" "$T"
-            # Inserisci le due import standard all'inizio
             sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
             sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
             echo "Patched imports in $T"
