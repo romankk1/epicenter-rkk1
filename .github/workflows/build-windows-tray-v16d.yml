@@ -1,4 +1,4 @@
-name: Build Windows Tray v16c (Vulkan via winget, robust)
+name: Build Windows Tray v16d (winget Vulkan, safe shim)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,6 @@ jobs:
     defaults:
       run:
         shell: pwsh
-
     env:
       NODE_ENV: production
 
@@ -31,39 +30,31 @@ jobs:
         run: |
           winget source update
           winget install --id LunarG.VulkanSDK --accept-package-agreements --accept-source-agreements --silent
-
           $root = "C:\VulkanSDK"
           if (!(Test-Path $root)) { throw "VulkanSDK root non trovato in $root" }
           $dirs = Get-ChildItem $root -Directory | Sort-Object Name -Descending
           if ($dirs.Count -eq 0) { throw "Nessuna versione VulkanSDK trovata in $root" }
           $sdk = $dirs[0].FullName
-
           "VULKAN_SDK=$sdk"   | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
           "VK_SDK_PATH=$sdk"  | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
           "PATH=$($sdk)\Bin;$Env:PATH" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "✅ Vulkan SDK in $sdk"
 
-          Write-Host "✅ Vulkan SDK installato in $sdk"
-
-      - name: Add FFmpeg check shim (safe here-string)
+      - name: Add FFmpeg check shim (line-by-line, no YAML tricks)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir  = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
-
-          $content = @'
-export type FfmpegCheck = { available: boolean; version?: string; error?: string };
-
-export async function checkFfmpeg(): Promise<FfmpegCheck> {
-  return { available: true, version: "CI" };
-}
-export function hasNavigatorLocalTranscriptionIssue(): boolean {
-  return false;
-}
-export default checkFfmpeg;
-'@
-
-          Set-Content -Path $ffmpegPath -Value $content -Encoding UTF8 -NoNewline
-          Write-Host "✅ FFmpeg shim written at $ffmpegPath"
+          Set-Content -Path $ffmpegPath -Value 'export type FfmpegCheck = { available: boolean; version?: string; error?: string };' -Encoding UTF8
+          Add-Content -Path $ffmpegPath -Value ''
+          Add-Content -Path $ffmpegPath -Value 'export async function checkFfmpeg(): Promise<FfmpegCheck> {'
+          Add-Content -Path $ffmpegPath -Value '  return { available: true, version: "CI" };'
+          Add-Content -Path $ffmpegPath -Value '}'
+          Add-Content -Path $ffmpegPath -Value 'export function hasNavigatorLocalTranscriptionIssue(): boolean {'
+          Add-Content -Path $ffmpegPath -Value '  return false;'
+          Add-Content -Path $ffmpegPath -Value '}'
+          Add-Content -Path $ffmpegPath -Value 'export default checkFfmpeg;'
+          Write-Host "✅ Shim scritto in $ffmpegPath"
 
       - name: Install JS deps (root)
         run: |
