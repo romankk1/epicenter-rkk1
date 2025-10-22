@@ -1,4 +1,4 @@
-name: Build Windows Tray v8d
+name: Build Windows Tray v8e
 
 on:
   workflow_dispatch:
@@ -79,91 +79,58 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: Pre-patch (pure PowerShell: spans, ffmpeg shims, imports, TIMESLICE_MS)
-        shell: pwsh
+      - name: Pre-patch (bash: spans, ffmpeg shims, imports, TIMESLICE_MS)
         working-directory: epicenter-up/apps/whispering
         run: |
-          # 1) Fix <span .../> -> <span ...></span>
-          $svelte = 'src/routes/(config)/settings/transcription/+page.svelte'
-          if (Test-Path $svelte) {
-            $txt = Get-Content -Raw -Path $svelte -Encoding UTF8
-            $txt = [regex]::Replace($txt, '<span([^>]*)\/>', '<span$1></span>')
-            Set-Content -Path $svelte -Value $txt -Encoding UTF8
-            Write-Host "Fixed <span/> in $svelte"
-          }
+          set -e
 
-          # 2) Shims di check-ffmpeg in ENTRAMBI i percorsi
-          function Write-Shim($Target) {
-            if (Test-Path $Target) { return }
-            New-Item -ItemType Directory -Force -Path (Split-Path $Target) | Out-Null
-            $lines = @(
-              "export type FfmpegCheck = { available: boolean; version?: string; error?: string };"
-              "export async function checkFfmpeg(): Promise<FfmpegCheck> {"
-              "  return { available: true, version: 'CI' };"
-              "}"
-              "export default checkFfmpeg;"
-              ""
-            )
-            Set-Content -Path $Target -Value ($lines -join "`n") -Encoding UTF8
-            Write-Host "Created shim $Target"
-          }
-          Write-Shim "src/routes/(config)/+layout/check-ffmpeg.ts"
-          Write-Shim "src/routes/+layout/check-ffmpeg.ts"
+          # 1) Fix self-closing <span />
+          F="src/routes/(config)/settings/transcription/+page.svelte"
+          if [ -f "$F" ]; then
+            sed -E -i 's#<span([^>]*)/>#<span\1></span>#g' "$F"
+            echo "Fixed <span/> in $F"
+          fi
 
-          # 3) Dedup imports in src/lib/query/commands.ts
-          $cmds = 'src/lib/query/commands.ts'
-          if (Test-Path $cmds) {
-            $lines = Get-Content -Path $cmds -Encoding UTF8
-            # 3a) wellcrafted/result: tieni UNA sola riga standard
-            $out = New-Object System.Collections.Generic.List[string]
-            $keptResult = $false
-            foreach ($l in $lines) {
-              $t = $l.Trim()
-              if ($t -match "^import\s*\{[^\}]*\}\s*from\s*['""]wellcrafted/result['""];?\s*$") {
-                if (-not $keptResult) {
-                  $out.Add("import { Err, Ok } from 'wellcrafted/result';")
-                  $keptResult = $true
-                }
-                continue
-              }
-              $out.Add($l)
-            }
-            # 3b) nanoid: forza 'nanoid/non-secure' e rimuovi duplicati
-            $seenNano = $false
-            $tmp = New-Object System.Collections.Generic.List[string]
-            foreach ($l in $out) {
-              $t = $l.Trim()
-              if ($t -match "^import\s*\{\s*nanoid\s*\}\s*from\s*['""]nanoid(\/non-secure)?['""];?\s*$") {
-                if ($seenNano) { continue }
-                $seenNano = $true
-                $tmp.Add("import { nanoid } from 'nanoid/non-secure';")
-              } else {
-                $tmp.Add(($l -replace "from\s*['""]nanoid['""]","from 'nanoid/non-secure'"))
-              }
-            }
-            Set-Content -Path $cmds -Value ($tmp -join "`n") -Encoding UTF8
-            Write-Host "Patched imports in $cmds"
+          # 2) Create check-ffmpeg shims (both locations)
+          mkshim() {
+            target="$1"
+            if [ ! -f "$target" ]; then
+              mkdir -p "$(dirname "$target")"
+              printf "export type FfmpegCheck = { available: boolean; version?: string; error?: string };\nexport async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: 'CI' }; }\nexport default checkFfmpeg;\n" > "$target"
+              echo "Created shim $target"
+            fi
           }
+          mkshim "src/routes/(config)/+layout/check-ffmpeg.ts"
+          mkshim "src/routes/+layout/check-ffmpeg.ts"
 
-          # 4) navigator.ts: togli const locale di TIMESLICE_MS e assicurati l'import da constants
-          $nav = 'src/lib/services/recorder/navigator.ts'
-          if (Test-Path $nav) {
-            $lines = Get-Content -Path $nav -Encoding UTF8
-            $hasImport = ($lines -match "from\s*'`$lib/constants/audio'") -or ($lines -match 'from\s*"\$lib/constants/audio"')
-            if (-not $hasImport) {
-              $lines = @("import { TIMESLICE_MS } from '$lib/constants/audio';") + $lines
-            }
-            $out = @()
-            foreach ($l in $lines) {
-              $t = $l.Trim()
-              if ($t -like 'const TIMESLICE_MS*' -or $t -like 'export const TIMESLICE_MS*') {
-                continue
-              }
-              $out += $l
-            }
-            Set-Content -Path $nav -Value ($out -join "`n") -Encoding UTF8
-            Write-Host "Normalized TIMESLICE_MS in $nav"
-          }
+          # 3) Patch imports in commands.ts
+          C="src/lib/query/commands.ts"
+          if [ -f "$C" ]; then
+            # Remove any existing wellcrafted/result import, then add a single standard one at top
+            tmp="$(mktemp)"
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/result['\"];?[[:space:]]*$" "$C" > "$tmp" || true
+            mv "$tmp" "$C"
+            sed -i "1i import { Err, Ok } from 'wellcrafted/result';" "$C"
+
+            # Remove any nanoid import lines (secure/non-secure), add a single non-secure at top
+            tmp="$(mktemp)"
+            grep -v -E "^[[:space:]]*import[[:space:]]*\{[[:space:]]*nanoid[[:space:]]*\}[[:space:]]*from[[:space:]]*['\"]nanoid(/non-secure)?['\"];?[[:space:]]*$" "$C" > "$tmp" || true
+            mv "$tmp" "$C"
+            sed -i "1i import { nanoid } from 'nanoid/non-secure';" "$C"
+
+            echo "Patched imports in $C"
+          fi
+
+          # 4) navigator.ts: ensure import from constants and remove any local const TIMESLICE_MS
+          N="src/lib/services/recorder/navigator.ts"
+          if [ -f "$N" ]; then
+            if ! grep -q "\$lib/constants/audio" "$N"; then
+              sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
+            fi
+            # delete any line declaring const TIMESLICE_MS
+            sed -E -i '/^[[:space:]]*(export[[:space:]]+)?const[[:space:]]+TIMESLICE_MS/d' "$N"
+            echo "Normalized TIMESLICE_MS in $N"
+          fi
 
       - name: Install Tauri CLI
         run: |
