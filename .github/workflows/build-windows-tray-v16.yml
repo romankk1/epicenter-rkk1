@@ -1,4 +1,4 @@
-name: Build Windows Tray v16b (Vulkan via winget, robust)
+name: Build Windows Tray v16c (Vulkan via winget, robust)
 
 on:
   workflow_dispatch:
@@ -38,28 +38,31 @@ jobs:
           if ($dirs.Count -eq 0) { throw "Nessuna versione VulkanSDK trovata in $root" }
           $sdk = $dirs[0].FullName
 
-          "VULKAN_SDK=$sdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          "VK_SDK_PATH=$sdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "VULKAN_SDK=$sdk"   | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_SDK_PATH=$sdk"  | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
           "PATH=$($sdk)\Bin;$Env:PATH" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
 
           Write-Host "✅ Vulkan SDK installato in $sdk"
 
-      - name: Add FFmpeg check shim (safe Base64 write)
+      - name: Add FFmpeg check shim (safe here-string)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir  = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
 
-          $b64 = @"
-ZXhwb3J0IHR5cGUgRmZtcGVnQ2hlY2sgPSB7IGF2YWlsYWJsZTogYm9vbGVhbjsgdmVyc2lvbj86IHN0cmluZzsg
-ZXJyb3I/OiBzdHJpbmcgfTsKCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBjaGVja0ZmbXBlZygpOiBQcm9taXNlPEZm
-bXBlZ0NoZWNrPiB7IHJldHVybiB7IGF2YWlsYWJsZTogdHJ1ZSwgdmVyc2lvbjogIkNJIiB9OyB9CgovLyBBbGN1
-bmUgU1ZHMjIgY2hlIHN1bGwgU2V0dGluZ3MgdXRpbGl6YXRhIGluIG1vZGUKZXhwb3J0IGZ1bmN0aW9uIGhhc05h
-dmlnYXRvckxvY2FsVHJhbnNjcmlwdGlvbklzc3VlKCk6IGJvb2xlYW4geyByZXR1cm4gZmFsc2U7IH0KCmV4cG9y
-dCBkZWZhdWx0IGNoZWNrRmZtcGVnOwo=
-"@
-          $bytes = [Convert]::FromBase64String(($b64 -replace '\s',''))
-          [IO.File]::WriteAllBytes($ffmpegPath, $bytes)
+          $content = @'
+export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+
+export async function checkFfmpeg(): Promise<FfmpegCheck> {
+  return { available: true, version: "CI" };
+}
+export function hasNavigatorLocalTranscriptionIssue(): boolean {
+  return false;
+}
+export default checkFfmpeg;
+'@
+
+          Set-Content -Path $ffmpegPath -Value $content -Encoding UTF8 -NoNewline
           Write-Host "✅ FFmpeg shim written at $ffmpegPath"
 
       - name: Install JS deps (root)
