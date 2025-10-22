@@ -74,11 +74,10 @@ jobs:
           T="src/routes/+layout/check-ffmpeg.ts"
           if [ ! -f "$T" ]; then
             mkdir -p "src/routes/+layout"
-            cat > "$T" <<'TS'
-export type FfmpegCheck = { available: boolean; version?: string; error?: string };
-export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: "CI" }; }
-export default checkFfmpeg;
-TS
+            printf "%s\n" \
+"export type FfmpegCheck = { available: boolean; version?: string; error?: string };" \
+"export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: \"CI\" }; }" \
+"export default checkFfmpeg;" > "$T"
           fi
 
       - name: Done
