@@ -1,0 +1,191 @@
+name: Build Windows Tray v8d
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone upstream epicenter (latest main)
+        run: |
+          git clone https://github.com/epicenter-md/epicenter.git epicenter-up
+          cd epicenter-up
+          git fetch --all --prune
+          git checkout origin/main -B tray-build
+
+      - name: Add tray feature remote & fetch
+        run: |
+          cd epicenter-up
+          git remote add tray https://github.com/vishesh-sachan/epicenter.git || true
+          git fetch tray feature/minimize-to-tray
+
+      - name: Merge tray feature (prefer tray)
+        run: |
+          cd epicenter-up
+          git config user.name "tray-bot"
+          git config user.email "tray-bot@users.noreply.github.com"
+          git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
+          git add -A || true
+          git commit -m "Temp merge: upstream main + tray feature for build" || true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset --yes --no-progress || $true
+          $candle = (Get-Command candle.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $candle) {
+            $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
+                     ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
+                     Where-Object { Test-Path $_ } |
+                     Select-Object -First 1
+            if ($guess) { $env:Path = "$env:Path;$(Split-Path $guess)" }
+          }
+          Write-Host "WiX ready"
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          $p1 = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          $p2 = 'C:\Program Files\NSIS\makensis.exe'
+          if (Test-Path $p1) { $env:Path = "$env:Path;$(Split-Path $p1)" }
+          elseif (Test-Path $p2) { $env:Path = "$env:Path;$(Split-Path $p2)" }
+          Write-Host "NSIS ready"
+
+      - name: Cache Bun
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('epicenter-up/**/bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Install deps
+        working-directory: epicenter-up
+        run: bun install
+
+      - name: Pre-patch (pure PowerShell: spans, ffmpeg shims, imports, TIMESLICE_MS)
+        shell: pwsh
+        working-directory: epicenter-up/apps/whispering
+        run: |
+          # 1) Fix <span .../> -> <span ...></span>
+          $svelte = 'src/routes/(config)/settings/transcription/+page.svelte'
+          if (Test-Path $svelte) {
+            $txt = Get-Content -Raw -Path $svelte -Encoding UTF8
+            $txt = [regex]::Replace($txt, '<span([^>]*)\/>', '<span$1></span>')
+            Set-Content -Path $svelte -Value $txt -Encoding UTF8
+            Write-Host "Fixed <span/> in $svelte"
+          }
+
+          # 2) Shims di check-ffmpeg in ENTRAMBI i percorsi
+          function Write-Shim($Target) {
+            if (Test-Path $Target) { return }
+            New-Item -ItemType Directory -Force -Path (Split-Path $Target) | Out-Null
+            $lines = @(
+              "export type FfmpegCheck = { available: boolean; version?: string; error?: string };"
+              "export async function checkFfmpeg(): Promise<FfmpegCheck> {"
+              "  return { available: true, version: 'CI' };"
+              "}"
+              "export default checkFfmpeg;"
+              ""
+            )
+            Set-Content -Path $Target -Value ($lines -join "`n") -Encoding UTF8
+            Write-Host "Created shim $Target"
+          }
+          Write-Shim "src/routes/(config)/+layout/check-ffmpeg.ts"
+          Write-Shim "src/routes/+layout/check-ffmpeg.ts"
+
+          # 3) Dedup imports in src/lib/query/commands.ts
+          $cmds = 'src/lib/query/commands.ts'
+          if (Test-Path $cmds) {
+            $lines = Get-Content -Path $cmds -Encoding UTF8
+            # 3a) wellcrafted/result: tieni UNA sola riga standard
+            $out = New-Object System.Collections.Generic.List[string]
+            $keptResult = $false
+            foreach ($l in $lines) {
+              $t = $l.Trim()
+              if ($t -match "^import\s*\{[^\}]*\}\s*from\s*['""]wellcrafted/result['""];?\s*$") {
+                if (-not $keptResult) {
+                  $out.Add("import { Err, Ok } from 'wellcrafted/result';")
+                  $keptResult = $true
+                }
+                continue
+              }
+              $out.Add($l)
+            }
+            # 3b) nanoid: forza 'nanoid/non-secure' e rimuovi duplicati
+            $seenNano = $false
+            $tmp = New-Object System.Collections.Generic.List[string]
+            foreach ($l in $out) {
+              $t = $l.Trim()
+              if ($t -match "^import\s*\{\s*nanoid\s*\}\s*from\s*['""]nanoid(\/non-secure)?['""];?\s*$") {
+                if ($seenNano) { continue }
+                $seenNano = $true
+                $tmp.Add("import { nanoid } from 'nanoid/non-secure';")
+              } else {
+                $tmp.Add(($l -replace "from\s*['""]nanoid['""]","from 'nanoid/non-secure'"))
+              }
+            }
+            Set-Content -Path $cmds -Value ($tmp -join "`n") -Encoding UTF8
+            Write-Host "Patched imports in $cmds"
+          }
+
+          # 4) navigator.ts: togli const locale di TIMESLICE_MS e assicurati l'import da constants
+          $nav = 'src/lib/services/recorder/navigator.ts'
+          if (Test-Path $nav) {
+            $lines = Get-Content -Path $nav -Encoding UTF8
+            $hasImport = ($lines -match "from\s*'`$lib/constants/audio'") -or ($lines -match 'from\s*"\$lib/constants/audio"')
+            if (-not $hasImport) {
+              $lines = @("import { TIMESLICE_MS } from '$lib/constants/audio';") + $lines
+            }
+            $out = @()
+            foreach ($l in $lines) {
+              $t = $l.Trim()
+              if ($t -like 'const TIMESLICE_MS*' -or $t -like 'export const TIMESLICE_MS*') {
+                continue
+              }
+              $out += $l
+            }
+            Set-Content -Path $nav -Value ($out -join "`n") -Encoding UTF8
+            Write-Host "Normalized TIMESLICE_MS in $nav"
+          }
+
+      - name: Install Tauri CLI
+        run: |
+          bun add -g @tauri-apps/cli@latest
+          bun --version
+          tauri -V || true
+
+      - name: Build (Tauri)
+        working-directory: epicenter-up/apps/whispering
+        env:
+          CI: "true"
+        run: |
+          echo "PATH=$PATH"
+          which bun || true
+          which tauri || true
+          bun tauri build || bunx --bun tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispering-windows-with-tray
+          path: |
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.msi
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.exe
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.zip
