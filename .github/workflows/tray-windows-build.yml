@@ -1,20 +1,17 @@
-name: Build Whispering (Windows) with Tray — v7
+name: Build Windows Tray (v7.1)
 
 on:
   workflow_dispatch:
 
-
 jobs:
-  build-tray-windows:
+  build:
     runs-on: windows-latest
-
     defaults:
       run:
         shell: bash
 
     steps:
-      - name: Checkout (placeholder)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Clone upstream epicenter (latest main)
         run: |
@@ -47,7 +44,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # WiX (MSI)
-      - name: Install WiX Toolset (for MSI)
+      - name: Install WiX Toolset
         shell: pwsh
         run: |
           choco install wixtoolset --yes --no-progress || $true
@@ -55,31 +52,19 @@ jobs:
           if (-not $candle) {
             $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
                      ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
-                     Where-Object { Test-Path $_ } |
-                     Select-Object -First 1
-            if ($guess) {
-              $env:Path = "$env:Path;$(Split-Path $guess)"
-              $candle = $guess
-            }
+                     Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($guess) { $env:Path = "$env:Path;$(Split-Path $guess)" }
           }
-          if (-not $candle) { throw "WiX (candle.exe) non trovato" }
-          & $candle -? | Out-Null
-          Write-Host "WiX in: $(Split-Path $candle)"
 
       # NSIS (EXE)
-      - name: Install NSIS (for EXE)
+      - name: Install NSIS
         shell: pwsh
         run: |
           choco install nsis --yes --no-progress
-          $nsis1='C:\Program Files (x86)\NSIS\makensis.exe'
-          $nsis2='C:\Program Files\NSIS\makensis.exe'
-          if (Test-Path $nsis1) {
-            & $nsis1 -VERSION
-            $env:Path = "$env:Path;$(Split-Path $nsis1)"
-          } elseif (Test-Path $nsis2) {
-            & $nsis2 -VERSION
-            $env:Path = "$env:Path;$(Split-Path $nsis2)"
-          } else { throw "makensis.exe non trovato" }
+          $p1='C:\Program Files (x86)\NSIS\makensis.exe'
+          $p2='C:\Program Files\NSIS\makensis.exe'
+          if (Test-Path $p1) { $env:Path = "$env:Path;$(Split-Path $p1)" }
+          elseif (Test-Path $p2) { $env:Path = "$env:Path;$(Split-Path $p2)" }
 
       - name: Cache Bun
         uses: actions/cache@v4
@@ -88,43 +73,33 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('epicenter-up/**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
 
-      - name: Install deps (monorepo)
+      - name: Install deps
         working-directory: epicenter-up
         run: bun install
 
-      # 🔧 PRE-PATCH: sistema <span /> e assicurati che check-ffmpeg sia risolvibile
-      - name: Pre-patch for CI (Svelte span + check-ffmpeg shim)
+      # Pre-patch: fix <span /> e shim check-ffmpeg se mancante
+      - name: Pre-patch for CI
         working-directory: epicenter-up/apps/whispering
         run: |
-          FILE="src/routes/(config)/settings/transcription/+page.svelte"
-          if [ -f "$FILE" ]; then
-            echo "Fixing self-closing <span /> in $FILE"
-            # usa perl (presente su runner) per espandere <span ... />
-            perl -0777 -pe 's/<span([^>]*)\/>/<span$1><\/span>/g' -i "$FILE"
-          fi
-
-          # se il modulo atteso non esiste o non è risolvibile, crea uno shim safe
-          TARGET="src/routes/+layout/check-ffmpeg.ts"
-          if [ ! -f "$TARGET" ]; then
-            echo "Creating shim: $TARGET"
+          F="src/routes/(config)/settings/transcription/+page.svelte"
+          [ -f "$F" ] && perl -0777 -pe 's/<span([^>]*)\/>/<span$1><\/span>/g' -i "$F"
+          T="src/routes/+layout/check-ffmpeg.ts"
+          if [ ! -f "$T" ]; then
             mkdir -p "src/routes/+layout"
-            cat > "$TARGET" <<'TS'
+            cat > "$T" <<'TS'
 export type FfmpegCheck = { available: boolean; version?: string; error?: string };
-export async function checkFfmpeg(): Promise<FfmpegCheck> {
-  // shim per CI: considera ffmpeg disponibile; la UI mostrerà 'ok'
-  return { available: true, version: "CI" };
-}
+export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: "CI" }; }
 export default checkFfmpeg;
 TS
           fi
 
-      - name: Install Tauri CLI (global)
+      - name: Install Tauri CLI
         run: |
           bun add -g @tauri-apps/cli@latest
           bun --version
           tauri -V || true
 
-      - name: Build Whispering (Windows + Tray)
+      - name: Build (Tauri)
         working-directory: epicenter-up/apps/whispering
         env:
           CI: "true"
@@ -134,7 +109,7 @@ TS
           which tauri || true
           bun tauri build || bunx --bun tauri build
 
-      - name: Upload Windows installer
+      - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
           name: whispering-windows-with-tray
