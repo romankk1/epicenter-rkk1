@@ -1,4 +1,4 @@
-name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v5
+name: Build Whispering (Windows) with Tray (no-merge, no-conflicts) — v6
 
 on:
   workflow_dispatch:
@@ -33,6 +33,7 @@ jobs:
           cd epicenter-up
           git config user.name "tray-bot"
           git config user.email "tray-bot@users.noreply.github.com"
+          # Preferisci SEMPRE le modifiche della tray in caso di conflitti
           git merge --no-edit -X theirs tray/feature/minimize-to-tray || true
           git add -A || true
           git commit -m "Temp merge: upstream main + tray feature for build" || true
@@ -45,21 +46,32 @@ jobs:
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
-      # ✅ WiX per MSI
+      # ✅ WiX per MSI (rilevamento dinamico del path di candle.exe)
       - name: Install WiX Toolset (for MSI)
         shell: pwsh
         run: |
-          choco install wixtoolset --yes --no-progress
-          $wix='C:\Program Files (x86)\WiX Toolset v3.11\bin'
-          if (Test-Path $wix) {
-            $env:Path = "$env:Path;$wix"
-            & "$wix\candle.exe" -? | Out-Null
-          } else {
-            Write-Error "WiX not found where expected."
+          choco install wixtoolset --yes --no-progress || $true
+          # Prova a trovare candle.exe già nel PATH
+          $candle = (Get-Command candle.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $candle) {
+            # Cerca nelle possibili cartelle (es. v3.11, v3.14, ecc.)
+            $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
+                     ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
+                     Where-Object { Test-Path $_ } |
+                     Select-Object -First 1
+            if ($guess) {
+              $env:Path = "$env:Path;$(Split-Path $guess)"
+              $candle = $guess
+            }
+          }
+          if (-not $candle) {
+            Write-Error "WiX (candle.exe) non trovato dopo installazione."
             exit 1
           }
+          & $candle -? | Out-Null
+          Write-Host "WiX trovato in: $(Split-Path $candle)"
 
-      # ✅ NSIS per EXE (path corretto)
+      # ✅ NSIS per EXE (gestione doppio path comune)
       - name: Install NSIS (for EXE)
         shell: pwsh
         run: |
@@ -73,7 +85,7 @@ jobs:
             & $nsis2 -VERSION
             $env:Path = "$env:Path;$(Split-Path $nsis2)"
           } else {
-            Write-Error "makensis not found after Chocolatey install."
+            Write-Error "makensis.exe non trovato dopo Chocolatey."
             exit 1
           }
 
@@ -102,7 +114,10 @@ jobs:
           echo "PATH=$PATH"
           which bun || true
           which tauri || true
-          bun tauri build || bunx --bun tauri build
+          # 1º tentativo: usa CLI globale installata con bun
+          bun tauri build || \
+          # 2º tentativo (fallback): invoca via bunx
+          bunx --bun tauri build
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
