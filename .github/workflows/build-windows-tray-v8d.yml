@@ -1,4 +1,4 @@
-name: Build Windows Tray v8g
+name: Build Windows Tray v8h
 
 on:
   workflow_dispatch:
@@ -79,7 +79,7 @@ jobs:
         working-directory: epicenter-up
         run: bun install
 
-      - name: "Prepatch (spans, ffmpeg, imports, TIMESLICE_MS, transformer)"
+      - name: "Prepatch (spans, ffmpeg, imports, navigator, transformer)"
         working-directory: epicenter-up/apps/whispering
         run: |
           set -e
@@ -119,40 +119,52 @@ jobs:
             echo "Patched imports in $C"
           fi
 
-          # 4) navigator.ts — solo import, zero dichiarazioni locali (anche destrutturazioni)
+          # 4) navigator.ts — rimuovi QUALSIASI dichiarazione locale e QUALSIASI presenza di TIMESLICE_MS in import multi-line
           N="src/lib/services/recorder/navigator.ts"
           if [ -f "$N" ]; then
+            # Assicura un singolo import esplicito di TIMESLICE_MS add-on (lo mettiamo in cima)
             if ! grep -q "\$lib/constants/audio" "$N"; then
               sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
+            else
+              # Aggiungi comunque un import standalone di TIMESLICE_MS in cima: poi lo togliamo dalle altre import lists
+              grep -q "import[[:space:]]*\{[^{]*TIMESLICE_MS" "$N" || sed -i "1i import { TIMESLICE_MS } from '\$lib/constants/audio';" "$N"
             fi
+
+            # 4a) elimina qualunque dichiarazione locale (const/let/var, anche destrutturazioni)
             sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+TIMESLICE_MS([[:space:]=,]|$)/d' "$N"
             sed -E -i '/^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+\{[^}]*\bTIMESLICE_MS\b[^}]*\}[[:space:]=]/d' "$N"
+
+            # 4b) RIMUOVI TIMESLICE_MS da TUTTI i blocchi import che puntano a $lib/constants/audio (anche multi-line)
+            #    - Applichiamo la pulizia su ogni riga compresa tra "import {" e la riga "from '$lib/constants/audio'"
+            #    - Poi ripuliamo virgole e parentesi residue.
             awk '
-              BEGIN{seen=0}
+              BEGIN { inblk=0 }
               {
                 line=$0
-                if (line ~ /from[[:space:]]*'\''\$lib\/constants\/audio'\''|from[[:space:]]*"\$lib\/constants\/audio"/) {
-                  if (line ~ /\{/) {
-                    if (seen==1) {
-                      gsub(/TIMESLICE_MS[[:space:]]*,[[:space:]]*|[[:space:]]*,[[:space:]]*TIMESLICE_MS|TIMESLICE_MS/,"",line)
-                    }
-                    seen=1
-                  }
+                if (inblk==0 && line ~ /^[[:space:]]*import[[:space:]]*\{/ ) { inblk=1 }
+                if (inblk==1) {
+                  # se nella riga compare TIMESLICE_MS, rimuovi token + eventuali virgole e spazi
+                  gsub(/(^|[[:space:]]|,)[[:space:]]*TIMESLICE_MS([[:space:]]*,|[[:space:]]|$)/,"\\1",line)
+                  # comprimi doppie virgole / "{ ,", ", }"
+                  gsub(/\{[[:space:]]*,[[:space:]]*/,"{",line)
+                  gsub(/[[:space:]]*,[[:space:]]*\}/,"}",line)
+                  gsub(/,[[:space:]]*,/,", ",line)
                 }
                 print line
+                if (inblk==1 && line ~ /from[[:space:]]*['""]\$lib\/constants\/audio['""]/ ) { inblk=0 }
               }
             ' "$N" > "$N.tmp" && mv "$N.tmp" "$N"
-            echo "Fully normalized TIMESLICE_MS in $N"
+
+            echo "Navigator imports cleaned in $N"
           fi
 
           # 5) transformer.ts — dedupe both wellcrafted/error and wellcrafted/result
           T="src/lib/query/transformer.ts"
           if [ -f "$T" ]; then
-            # rimuovi TUTTE le import da error/result
             tmp="$(mktemp)"
             grep -v -E "^[[:space:]]*import[[:space:]]*\{[^}]*\}[[:space:]]*from[[:space:]]*['\"]wellcrafted/(error|result)['\"];?[[:space:]]*$" "$T" > "$tmp" || true
             mv "$tmp" "$T"
-            # inserisci ESATTAMENTE queste due righe in cima
+            # Inserisci le due import standard all'inizio
             sed -i "1i import { createTaggedError, extractErrorMessage } from 'wellcrafted/error';" "$T"
             sed -i "2i import { Err, Ok, type Result, isErr } from 'wellcrafted/result';" "$T"
             echo "Patched imports in $T"
