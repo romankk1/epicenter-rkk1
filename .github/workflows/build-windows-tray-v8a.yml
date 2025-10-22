@@ -4,15 +4,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  prep:
+  build:
     runs-on: windows-latest
     defaults:
       run:
         shell: bash
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ============ CLONE + MERGE FEATURE TRAY ============
       - name: Clone upstream epicenter (latest main)
         run: |
           git clone https://github.com/epicenter-md/epicenter.git epicenter-up
@@ -35,6 +37,7 @@ jobs:
           git add -A || true
           git commit -m "Temp merge: upstream main + tray feature for build" || true
 
+      # ============ TOOLCHAIN ============
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -43,15 +46,29 @@ jobs:
       - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install WiX Toolset
+      - name: Install WiX Toolset (MSI)
         shell: pwsh
         run: |
           choco install wixtoolset --yes --no-progress || $true
+          $candle = (Get-Command candle.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $candle) {
+            $guess = Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
+                     ForEach-Object { Join-Path $_.FullName "bin\candle.exe" } |
+                     Where-Object { Test-Path $_ } |
+                     Select-Object -First 1
+            if ($guess) { $env:Path = "$env:Path;$(Split-Path $guess)" }
+          }
+          Write-Host "WiX ready"
 
-      - name: Install NSIS
+      - name: Install NSIS (EXE)
         shell: pwsh
         run: |
           choco install nsis --yes --no-progress
+          $p1 = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          $p2 = 'C:\Program Files\NSIS\makensis.exe'
+          if (Test-Path $p1) { $env:Path = "$env:Path;$(Split-Path $p1)" }
+          elseif (Test-Path $p2) { $env:Path = "$env:Path;$(Split-Path $p2)" }
+          Write-Host "NSIS ready"
 
       - name: Cache Bun
         uses: actions/cache@v4
@@ -60,18 +77,16 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('epicenter-up/**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
 
-      - name: Install deps
+      - name: Install deps (monorepo)
         working-directory: epicenter-up
         run: bun install
 
-      # --- PRE-PATCH SEMPLICE (niente heredoc, niente perl lungo) ---
-
+      # ============ PRE-PATCH SEMPLICE ============
       - name: Fix self-closing <span/> in +page.svelte
         working-directory: epicenter-up/apps/whispering
         run: |
           F="src/routes/(config)/settings/transcription/+page.svelte"
           if [ -f "$F" ]; then
-            # sostituisci <span .../> -> <span ...></span>
             sed -E -i 's#<span([^>]*)/>#<span\1></span>#g' "$F"
           fi
 
@@ -86,5 +101,29 @@ jobs:
             echo 'export default checkFfmpeg;' >> "$T"
           fi
 
-      - name: Done
-        run: echo "deps & pre-patch ok ✅"
+      # ============ BUILD TAURI ============
+      - name: Install Tauri CLI
+        run: |
+          bun add -g @tauri-apps/cli@latest
+          bun --version
+          tauri -V || true
+
+      - name: Build (Tauri)
+        working-directory: epicenter-up/apps/whispering
+        env:
+          CI: "true"
+        run: |
+          echo "PATH=$PATH"
+          which bun || true
+          which tauri || true
+          bun tauri build || bunx --bun tauri build
+
+      # ============ ARTIFACTS ============
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispering-windows-with-tray
+          path: |
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.msi
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.exe
+            epicenter-up/apps/whispering/src-tauri/target/release/bundle/**/*.zip
