@@ -1,4 +1,4 @@
-name: Build Windows Tray v17c (CPU-only, no Vulkan, robust patch)
+name: Build Windows Tray v18 (CPU-only, force no Vulkan)
 
 on:
   workflow_dispatch:
@@ -11,9 +11,6 @@ jobs:
         shell: pwsh
     env:
       NODE_ENV: production
-      WHISPER_DONT_USE_VULKAN: "1"
-      WHISPER_RS_SYS_NO_VULKAN: "1"
-      WHISPER_RS_NO_VULKAN: "1"
 
     steps:
       - name: Checkout repository
@@ -29,79 +26,109 @@ jobs:
           bun add -g @tauri-apps/cli
           tauri -V
 
-      - name: Add FFmpeg check shim (line-by-line)
+      - name: Add FFmpeg check shim
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $ffmpegDir  = Split-Path $ffmpegPath
           if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
-          Set-Content -Path $ffmpegPath -Value 'export type FfmpegCheck = { available: boolean; version?: string; error?: string };' -Encoding UTF8
-          Add-Content -Path $ffmpegPath -Value ''
-          Add-Content -Path $ffmpegPath -Value 'export async function checkFfmpeg(): Promise<FfmpegCheck> {'
-          Add-Content -Path $ffmpegPath -Value '  return { available: true, version: "CI" };'
-          Add-Content -Path $ffmpegPath -Value '}'
-          Add-Content -Path $ffmpegPath -Value 'export function hasNavigatorLocalTranscriptionIssue(): boolean {'
-          Add-Content -Path $ffmpegPath -Value '  return false;'
-          Add-Content -Path $ffmpegPath -Value '}'
-          Add-Content -Path $ffmpegPath -Value 'export default checkFfmpeg;'
+          @"
+export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: "CI" }; }
+export function hasNavigatorLocalTranscriptionIssue(): boolean { return false; }
+export default checkFfmpeg;
+"@ | Set-Content -Path $ffmpegPath -Encoding UTF8
           Write-Host "✅ Shim scritto in $ffmpegPath"
 
-      - name: Disable Vulkan features in Cargo.toml (CPU-only, robust)
+      - name: Force CPU-only in Cargo.toml (disable default-features & features)
         working-directory: apps/whispering/src-tauri
         run: |
           $file = "Cargo.toml"
           if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in $(Get-Location)" }
           $text = Get-Content $file -Raw
 
-          # 1) Rimuovi tutti i token "vulkan" ovunque nel TOML (sia inline che multiline)
+          # Helper: assicurati sezione [features] con default = []
+          if ($text -notmatch '^\s*\[features\]\s*$(?ms)') {
+            $text = $text.TrimEnd() + "`r`n`r`n[features]`r`ndefault = []`r`n"
+          } elseif ($text -notmatch '(?ms)^\s*\[features\][\s\S]*?^\s*default\s*=\s*\[') {
+            # sezione features esiste ma senza default -> aggiungi
+            $text = $text -replace '(?ms)^\s*\[features\]\s*', "[features]`r`ndefault = []`r`n"
+          }
+
+          function Ensure-InlineDepNoFeatures([string]$src, [string]$name) {
+            $pattern = "(?ms)^\s*" + [regex]::Escape($name) + "\s*=\s*\{[^}]*\}"
+            if ($src -match $pattern) {
+              return ($src -replace $pattern, {
+                param($m)
+                $blk = $m.Value
+                # rimuovi features esistenti e default-features
+                $blk = $blk -replace '(?i)features\s*=\s*\[[^\]]*\]\s*,?\s*', ''
+                if ($blk -match '(?i)default-features\s*=') {
+                  $blk = $blk -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
+                } else {
+                  $blk = $blk -replace '\}\s*$', ', default-features = false }'
+                }
+                # aggiungi features = [] in coda prima della }
+                $blk = $blk -replace '\}\s*$', ', features = [] }'
+                $blk
+              })
+            }
+            return $src
+          }
+
+          function Ensure-TableDepNoFeatures([string]$src, [string]$name) {
+            $headPattern = "^\s*\[dependencies\." + [regex]::Escape($name) + "\]\s*$"
+            if ($src -match $headPattern) {
+              $src = ($src -replace "(?ms)($headPattern)([\s\S]*?)(?=^\s*\[|\Z)", {
+                param($m)
+                $head = $m.Groups[1].Value
+                $body = $m.Groups[2].Value
+
+                # elimina linee features = [ ... ] e default-features = true
+                $body = ($body -split "(`r`n|`n)") | Where-Object {
+                  $_ -notmatch '(?i)^\s*features\s*=' -and $_ -notmatch '(?i)^\s*default-features\s*='
+                } | ForEach-Object { $_ } | Out-String
+                $body = $body -replace "^\s+$",""
+                $body = $body.TrimEnd()
+
+                $injected = @()
+                if ($body -ne '') { $injected += $body }
+                $injected += "default-features = false"
+                $injected += "features = []"
+                $out = $head + "`r`n" + ($injected -join "`r`n") + "`r`n"
+                $out
+              })
+            }
+            return $src
+          }
+
+          # 1) prova a forzare sulle forme inline { ... }
+          $text = Ensure-InlineDepNoFeatures $text 'whisper-rs'
+          $text = Ensure-InlineDepNoFeatures $text 'whisper-rs-sys'
+
+          # 2) prova a forzare sulle forme [dependencies.xxx]
+          $text = Ensure-TableDepNoFeatures $text 'whisper-rs'
+          $text = Ensure-TableDepNoFeatures $text 'whisper-rs-sys'
+
+          # 3) se non esistono, aggiungili esplicitamente con versioni e senza features
+          if ($text -notmatch '(?ms)^\s*whisper-rs\s*=') {
+            $text = $text -replace '(?ms)^\s*\[dependencies\]\s*', "[dependencies]`r`nwhisper-rs = { version = ""0.11"", default-features = false, features = [] }`r`n"
+          }
+          if ($text -notmatch '(?ms)^\s*whisper-rs-sys\s*=') {
+            $text = $text -replace '(?ms)^\s*\[dependencies\]\s*', "[dependencies]`r`nwhisper-rs-sys = { version = ""0.11.1"", default-features = false, features = [] }`r`n"
+          }
+
+          # 4) rimuovi eventuali token "vulkan" residui in tutto il file
           $before = $text
-          $text = $text -replace '(?i)"vulkan"\s*,\s*', ''   # "vulkan",   -> rimosso
-          $text = $text -replace '(?i),\s*"vulkan"\s*', ''   # , "vulkan"  -> rimosso
-          $text = $text -replace '(?i)"vulkan"\s*', ''       # "vulkan"    -> rimosso (ultimo elemento)
-          # Pulisci virgole doppie o virgole prima della chiusura di array
-          $text = $text -replace ',\s*,', ','                # ,, -> ,
-          $text = $text -replace ',\s*\]', ' ]'              # ,] -> ]
-          $text = $text -replace '\[\s*,', '['               # [, -> [
-          if ($text -ne $before) { Write-Host "🧹 Rimossi riferimenti a \"vulkan\" da Cargo.toml" }
-
-          # Helper: forza default-features=false in blocchi inline { ... } della dipendenza
-          function Force-InlineDefaultFalse([string]$toml, [string]$pkg){
-            $pattern = "(?ms)^\s*$([regex]::Escape($pkg))\s*=\s*\{[^}]*\}"
-            return ($toml -replace $pattern, {
-              param($m)
-              $blk = $m.Value
-              if ($blk -notmatch '(?i)default-features\s*='){
-                $blk = $blk -replace '\}\s*$', ', default-features = false }'
-              } else {
-                $blk = $blk -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
-              }
-              $blk
-            })
-          }
-
-          # Helper: forza default-features=false in blocchi a sezione [dependencies.pkg]
-          function Force-TableDefaultFalse([string]$toml, [string]$pkg){
-            $section = "(?ms)^\s*\[\s*dependencies\s*\.\s*$([regex]::Escape($pkg))\s*\]\s*(.*?)\s*(?=^\s*\[|\Z)"
-            return ($toml -replace $section, {
-              param($m)
-              $head = $m.Groups[0].Value.Substring(0, $m.Groups[0].Value.IndexOf($m.Groups[1].Value))
-              $body = $m.Groups[1].Value
-              if ($body -notmatch '(?i)^\s*default-features\s*=' ){
-                $body = ($body.TrimEnd() + "`r`n" + 'default-features = false' + "`r`n")
-              } else {
-                $body = $body -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
-              }
-              "[dependencies.$pkg]`r`n$body"
-            })
-          }
-
-          # 2) Applica a whisper-rs e whisper-rs-sys (inline e/o a blocchi)
-          $text = Force-InlineDefaultFalse $text 'whisper-rs'
-          $text = Force-InlineDefaultFalse $text 'whisper-rs-sys'
-          $text = Force-TableDefaultFalse  $text 'whisper-rs'
-          $text = Force-TableDefaultFalse  $text 'whisper-rs-sys'
+          $text = $text -replace '(?i)"vulkan"\s*,\s*', ''
+          $text = $text -replace '(?i),\s*"vulkan"\s*', ''
+          $text = $text -replace '(?i)"vulkan"\s*', ''
+          $text = $text -replace ',\s*,', ','
+          $text = $text -replace ',\s*\]', ' ]'
+          $text = $text -replace '\[\s*,', '['
+          if ($text -ne $before) { Write-Host "🧹 Rimossi riferimenti a \"vulkan\"" }
 
           Set-Content -Path $file -Value $text -Encoding UTF8
-          Write-Host "✅ Cargo.toml patchato per CPU-only (no Vulkan)"
+          Write-Host "✅ Cargo.toml forzato a CPU-only (no default-features, features = []) per whisper-rs e whisper-rs-sys"
 
       - name: Install JS deps (root)
         run: |
@@ -116,11 +143,6 @@ jobs:
 
       - name: Build Tauri (Windows, CPU-only)
         working-directory: apps/whispering
-        env:
-          NODE_ENV: production
-          WHISPER_DONT_USE_VULKAN: ${{ env.WHISPER_DONT_USE_VULKAN }}
-          WHISPER_RS_SYS_NO_VULKAN: ${{ env.WHISPER_RS_SYS_NO_VULKAN }}
-          WHISPER_RS_NO_VULKAN: ${{ env.WHISPER_RS_NO_VULKAN }}
         run: |
           tauri build
           Write-Host "✅ Tauri build done (CPU-only)"
