@@ -1,4 +1,4 @@
-name: Build Windows Tray v17 (CPU-only, no Vulkan)
+name: Build Windows Tray v17c (CPU-only, no Vulkan, robust patch)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,6 @@ jobs:
         shell: pwsh
     env:
       NODE_ENV: production
-      # Hard-kill any attempt to use Vulkan in build scripts
       WHISPER_DONT_USE_VULKAN: "1"
       WHISPER_RS_SYS_NO_VULKAN: "1"
       WHISPER_RS_NO_VULKAN: "1"
@@ -30,7 +29,6 @@ jobs:
           bun add -g @tauri-apps/cli
           tauri -V
 
-      # Shim FFmpeg check to avoid missing-file import during SSR build
       - name: Add FFmpeg check shim (line-by-line)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
@@ -47,48 +45,61 @@ jobs:
           Add-Content -Path $ffmpegPath -Value 'export default checkFfmpeg;'
           Write-Host "✅ Shim scritto in $ffmpegPath"
 
-      # Patch Cargo.toml to ensure Vulkan feature is disabled
-      - name: Disable Vulkan features in Cargo.toml (CPU-only)
+      - name: Disable Vulkan features in Cargo.toml (CPU-only, robust)
         working-directory: apps/whispering/src-tauri
         run: |
           $file = "Cargo.toml"
           if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in $(Get-Location)" }
           $text = Get-Content $file -Raw
 
-          # 1) Rimuovi "vulkan" dalle liste features (whisper-rs o whisper-rs-sys)
-          $text = $text -replace 'features\s*=\s*\[([^\]]*?)\]', {
-            param($m)
-            $inner = $m.Groups[1].Value
-            # togli eventuali "vulkan"
-            $clean = ($inner -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -notmatch '"vulkan"' }
-            'features = [' + ($clean -join ', ') + ']'
-          }
+          # 1) Rimuovi tutti i token "vulkan" ovunque nel TOML (sia inline che multiline)
+          $before = $text
+          $text = $text -replace '(?i)"vulkan"\s*,\s*', ''   # "vulkan",   -> rimosso
+          $text = $text -replace '(?i),\s*"vulkan"\s*', ''   # , "vulkan"  -> rimosso
+          $text = $text -replace '(?i)"vulkan"\s*', ''       # "vulkan"    -> rimosso (ultimo elemento)
+          # Pulisci virgole doppie o virgole prima della chiusura di array
+          $text = $text -replace ',\s*,', ','                # ,, -> ,
+          $text = $text -replace ',\s*\]', ' ]'              # ,] -> ]
+          $text = $text -replace '\[\s*,', '['               # [, -> [
+          if ($text -ne $before) { Write-Host "🧹 Rimossi riferimenti a \"vulkan\" da Cargo.toml" }
 
-          # 2) Assicurati default-features = false sui pacchetti whisper-rs e whisper-rs-sys
-          function EnsureDefaultFeaturesFalse($toml, $pkg) {
-            # cerca la riga del pacchetto in forma inline table: pkg = { ... }
-            $pattern = "(?ms)^\s*$pkg\s*=\s*\{[^}]*\}"
-            if ($toml -match $pattern) {
-              $toml = $toml -replace $pattern, {
-                param($mm)
-                $blk = $mm.Value
-                if ($blk -notmatch 'default-features\s*=') {
-                  # inserisci default-features=false prima della chiusura
-                  $blk = $blk -replace '\}\s*$', ', default-features = false }'
-                } else {
-                  # forza a false
-                  $blk = $blk -replace 'default-features\s*=\s*\w+', 'default-features = false'
-                }
-                $blk
+          # Helper: forza default-features=false in blocchi inline { ... } della dipendenza
+          function Force-InlineDefaultFalse([string]$toml, [string]$pkg){
+            $pattern = "(?ms)^\s*$([regex]::Escape($pkg))\s*=\s*\{[^}]*\}"
+            return ($toml -replace $pattern, {
+              param($m)
+              $blk = $m.Value
+              if ($blk -notmatch '(?i)default-features\s*='){
+                $blk = $blk -replace '\}\s*$', ', default-features = false }'
+              } else {
+                $blk = $blk -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
               }
-            }
-            return $toml
+              $blk
+            })
           }
 
-          $text = EnsureDefaultFeaturesFalse $text 'whisper-rs'
-          $text = EnsureDefaultFeaturesFalse $text 'whisper-rs-sys'
+          # Helper: forza default-features=false in blocchi a sezione [dependencies.pkg]
+          function Force-TableDefaultFalse([string]$toml, [string]$pkg){
+            $section = "(?ms)^\s*\[\s*dependencies\s*\.\s*$([regex]::Escape($pkg))\s*\]\s*(.*?)\s*(?=^\s*\[|\Z)"
+            return ($toml -replace $section, {
+              param($m)
+              $head = $m.Groups[0].Value.Substring(0, $m.Groups[0].Value.IndexOf($m.Groups[1].Value))
+              $body = $m.Groups[1].Value
+              if ($body -notmatch '(?i)^\s*default-features\s*=' ){
+                $body = ($body.TrimEnd() + "`r`n" + 'default-features = false' + "`r`n")
+              } else {
+                $body = $body -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
+              }
+              "[dependencies.$pkg]`r`n$body"
+            })
+          }
 
-          # 3) Salva solo se cambiato
+          # 2) Applica a whisper-rs e whisper-rs-sys (inline e/o a blocchi)
+          $text = Force-InlineDefaultFalse $text 'whisper-rs'
+          $text = Force-InlineDefaultFalse $text 'whisper-rs-sys'
+          $text = Force-TableDefaultFalse  $text 'whisper-rs'
+          $text = Force-TableDefaultFalse  $text 'whisper-rs-sys'
+
           Set-Content -Path $file -Value $text -Encoding UTF8
           Write-Host "✅ Cargo.toml patchato per CPU-only (no Vulkan)"
 
