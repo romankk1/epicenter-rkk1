@@ -46,11 +46,9 @@ export default checkFfmpeg;
           if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in $(Get-Location)" }
           $text = Get-Content $file -Raw
 
-          # Helper: assicurati sezione [features] con default = []
           if ($text -notmatch '^\s*\[features\]\s*$(?ms)') {
             $text = $text.TrimEnd() + "`r`n`r`n[features]`r`ndefault = []`r`n"
           } elseif ($text -notmatch '(?ms)^\s*\[features\][\s\S]*?^\s*default\s*=\s*\[') {
-            # sezione features esiste ma senza default -> aggiungi
             $text = $text -replace '(?ms)^\s*\[features\]\s*', "[features]`r`ndefault = []`r`n"
           }
 
@@ -60,14 +58,12 @@ export default checkFfmpeg;
               return ($src -replace $pattern, {
                 param($m)
                 $blk = $m.Value
-                # rimuovi features esistenti e default-features
                 $blk = $blk -replace '(?i)features\s*=\s*\[[^\]]*\]\s*,?\s*', ''
                 if ($blk -match '(?i)default-features\s*=') {
                   $blk = $blk -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
                 } else {
                   $blk = $blk -replace '\}\s*$', ', default-features = false }'
                 }
-                # aggiungi features = [] in coda prima della }
                 $blk = $blk -replace '\}\s*$', ', features = [] }'
                 $blk
               })
@@ -82,14 +78,11 @@ export default checkFfmpeg;
                 param($m)
                 $head = $m.Groups[1].Value
                 $body = $m.Groups[2].Value
-
-                # elimina linee features = [ ... ] e default-features = true
                 $body = ($body -split "(`r`n|`n)") | Where-Object {
                   $_ -notmatch '(?i)^\s*features\s*=' -and $_ -notmatch '(?i)^\s*default-features\s*='
                 } | ForEach-Object { $_ } | Out-String
                 $body = $body -replace "^\s+$",""
                 $body = $body.TrimEnd()
-
                 $injected = @()
                 if ($body -ne '') { $injected += $body }
                 $injected += "default-features = false"
@@ -101,15 +94,11 @@ export default checkFfmpeg;
             return $src
           }
 
-          # 1) prova a forzare sulle forme inline { ... }
           $text = Ensure-InlineDepNoFeatures $text 'whisper-rs'
           $text = Ensure-InlineDepNoFeatures $text 'whisper-rs-sys'
-
-          # 2) prova a forzare sulle forme [dependencies.xxx]
           $text = Ensure-TableDepNoFeatures $text 'whisper-rs'
           $text = Ensure-TableDepNoFeatures $text 'whisper-rs-sys'
 
-          # 3) se non esistono, aggiungili esplicitamente con versioni e senza features
           if ($text -notmatch '(?ms)^\s*whisper-rs\s*=') {
             $text = $text -replace '(?ms)^\s*\[dependencies\]\s*', "[dependencies]`r`nwhisper-rs = { version = ""0.11"", default-features = false, features = [] }`r`n"
           }
@@ -117,7 +106,6 @@ export default checkFfmpeg;
             $text = $text -replace '(?ms)^\s*\[dependencies\]\s*', "[dependencies]`r`nwhisper-rs-sys = { version = ""0.11.1"", default-features = false, features = [] }`r`n"
           }
 
-          # 4) rimuovi eventuali token "vulkan" residui in tutto il file
           $before = $text
           $text = $text -replace '(?i)"vulkan"\s*,\s*', ''
           $text = $text -replace '(?i),\s*"vulkan"\s*', ''
@@ -125,10 +113,10 @@ export default checkFfmpeg;
           $text = $text -replace ',\s*,', ','
           $text = $text -replace ',\s*\]', ' ]'
           $text = $text -replace '\[\s*,', '['
-          if ($text -ne $before) { Write-Host "🧹 Rimossi riferimenti a \"vulkan\"" }
+          if ($text -ne $before) { Write-Host "🧹 Rimossi riferimenti a ""vulkan""" }
 
           Set-Content -Path $file -Value $text -Encoding UTF8
-          Write-Host "✅ Cargo.toml forzato a CPU-only (no default-features, features = []) per whisper-rs e whisper-rs-sys"
+          Write-Host "✅ Cargo.toml forzato a CPU-only"
 
       - name: Install JS deps (root)
         run: |
