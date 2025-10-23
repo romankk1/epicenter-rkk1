@@ -37,41 +37,51 @@ jobs:
       - name: Install WiX (for MSI)
         run: |
           choco install wixtoolset --yes --no-progress
-          if (-not (Test-Path "C:\Program Files (x86)\WiX Toolset v3.14\bin")) { throw "WiX non trovato" }
 
-      # ---- Patch: forza CPU-only (nessun Vulkan) in Cargo.toml ----
+      # 🧩 Patch whisper-rs-sys to disable Vulkan linking
+      - name: Patch whisper-rs-sys build.rs (disable Vulkan)
+        run: |
+          $pattern = "whisper-rs-sys-0.11.1"
+          $path = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $pattern } | Select-Object -First 1
+          if (-not $path) {
+            Write-Host "Waiting for cargo registry to populate..."
+            cargo fetch whisper-rs-sys
+            $path = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $pattern } | Select-Object -First 1
+          }
+          if ($path) {
+            $file = Join-Path $path.FullName "build.rs"
+            (Get-Content $file) -replace 'cargo:rustc-link-lib=vulkan-1','// cargo:rustc-link-lib=vulkan-1 (disabled for CI)' | Set-Content $file -Encoding UTF8
+            Write-Host "✅ Vulkan link disabled in whisper-rs-sys build.rs"
+          } else {
+            Write-Host "⚠️ whisper-rs-sys not found yet; skipping patch"
+          }
+
       - name: Force CPU-only (no Vulkan) in Cargo.toml
         working-directory: apps/whispering/src-tauri
         run: |
           $f="Cargo.toml"
-          if (-not (Test-Path $f)) { throw "Cargo.toml non trovato in src-tauri" }
           $t = Get-Content $f -Raw
           $t = $t -replace 'features\s*=\s*\[\s*"vulkan"\s*\]', 'default-features = false'
           $t = $t -replace '(^\s*whisper-rs\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs = { version = "0.11", default-features = false }'
           $t = $t -replace '(^\s*whisper-rs-sys\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs-sys = { version = "0.11.1", default-features = false }'
-          $t = $t -replace 'whisper-rs\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs = { version = "$1", default-features = false }'
-          $t = $t -replace 'whisper-rs-sys\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs-sys = { version = "$1", default-features = false }'
           Set-Content $f $t -Encoding UTF8
-          Write-Host "✅ Cargo.toml forzato CPU-only"
+          Write-Host "✅ Cargo.toml forced to CPU-only"
 
-      # ---- Shim ffmpeg: scritto come array di righe per evitare problemi YAML ----
       - name: Add tiny ffmpeg shim (only if missing)
         working-directory: apps/whispering
         run: |
           $dir = "src/routes/(config)/+layout"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $ff  = Join-Path $dir "check-ffmpeg.ts"
+          $ff = Join-Path $dir "check-ffmpeg.ts"
           if (-not (Test-Path $ff)) {
             $lines = @(
               'export async function hasNavigatorLocalTranscriptionIssue() {'
-              '  // Shim per CI: nessun problema di ffmpeg su Windows runner'
+              '  // Shim per CI'
               '  return false;'
               '}'
             )
             Set-Content -Path $ff -Value $lines -Encoding UTF8
-            Write-Host "Created shim check-ffmpeg.ts"
-          } else {
-            Write-Host "Shim già presente."
+            Write-Host "Shim creato"
           }
 
       - name: Bun install (workspace)
@@ -87,7 +97,6 @@ jobs:
           NODE_ENV: production
         run: bun run build
 
-      # ---- Build Tauri con NPX invece di bunx ----
       - name: Build Tauri bundle (CPU-only)
         working-directory: apps/whispering
         env:
