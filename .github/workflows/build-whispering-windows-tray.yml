@@ -19,6 +19,11 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Setup Node (for npx)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -82,13 +87,14 @@ jobs:
           NODE_ENV: production
         run: bun run build
 
+      # ---- Build Tauri con NPX invece di bunx ----
       - name: Build Tauri bundle (CPU-only)
         working-directory: apps/whispering
         env:
           RUSTFLAGS: "-C target-cpu=native"
         run: |
-          bunx --bun @tauri-apps/cli@latest tauri build
-          Write-Host "Done Tauri build"
+          npx @tauri-apps/cli@latest build
+          Write-Host "✅ Done Tauri build"
 
       - name: Upload installer artifacts
         if: always()
