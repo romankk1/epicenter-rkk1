@@ -1,26 +1,32 @@
-name: Build Windows Tray — v17 (shim only)
+name: Build Windows Tray — v18 (Whispering only)
 
 on:
   workflow_dispatch:
 
 jobs:
-  make-ffmpeg-shim:
+  build-whispering-windows-tray:
     runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create check-ffmpeg.ts safely (PowerShell here-string)
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Create check-ffmpeg.ts (shim)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
           $dir = Split-Path $ffmpegPath
-          if (-not (Test-Path $dir)) {
-            New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          }
-
+          if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
           $content = @'
           export type FfmpegCheck = { available: boolean; version?: string; error?: string };
           export async function checkFfmpeg(): Promise<FfmpegCheck> {
@@ -31,10 +37,70 @@ jobs:
           }
           export default checkFfmpeg;
           '@
-
           Set-Content -Path $ffmpegPath -Value $content -Encoding UTF8
           Write-Host "✅ Wrote $ffmpegPath"
 
-      - name: Show file back (for sanity)
+      - name: Fix self-closing <span /> in Svelte (harmless warning but clean)
         run: |
-          Get-Content "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
+          $f = "apps/whispering/src/routes/(config)/settings/transcription/+page.svelte"
+          if (Test-Path $f) {
+            $s = Get-Content $f -Raw
+            # Sostituisce solo i <span ... /> autochiusi in <span ...></span>
+            $s = $s -replace '<span([^>]*)\/>', '<span$1></span>'
+            Set-Content $f $s -Encoding UTF8
+            Write-Host "✅ Cleaned self-closing <span/> in $f"
+          } else {
+            Write-Host "ℹ️ File non trovato (ok se percorso è cambiato): $f"
+          }
+
+      - name: Install WiX (for MSI packaging)
+        run: |
+          choco install wixtoolset --yes --no-progress
+          $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin"
+          if (Test-Path $wix) { $env:PATH = "$wix;$env:PATH" }
+
+      - name: Install Vulkan SDK via Winget and set VULKAN_SDK
+        run: |
+          winget source update
+          # Installa LunarG Vulkan SDK (silent). Se è già presente, winget non fallisce.
+          winget install -e --id LunarG.VulkanSDK --accept-package-agreements --accept-source-agreements --silent
+          # Trova la cartella versione più recente in C:\VulkanSDK e imposta VULKAN_SDK
+          $root = "C:\VulkanSDK"
+          if (!(Test-Path $root)) { throw "VulkanSDK root non trovato in $root" }
+          $verDir = Get-ChildItem $root -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $verDir) { throw "Nessuna versione trovata in $root" }
+          $env:VULKAN_SDK = Join-Path $root $verDir.Name
+          [System.Environment]::SetEnvironmentVariable("VULKAN_SDK", $env:VULKAN_SDK, "Process")
+          Write-Host "✅ VULKAN_SDK = $env:VULKAN_SDK"
+
+      - name: Install Tauri CLI (via bunx)
+        run: |
+          bunx --yes @tauri-apps/cli@latest --version
+
+      - name: Install JS deps (root) — lightweight
+        run: |
+          bun install --no-progress
+
+      - name: Build Whispering (Vite) — production
+        working-directory: apps/whispering
+        run: |
+          $env:NODE_ENV = "production"
+          bun run build
+
+      - name: Build Whispering (Tauri Windows)
+        working-directory: apps/whispering
+        env:
+          VULKAN_SDK: ${{ env.VULKAN_SDK }}
+        run: |
+          Write-Host "PATH=$env:PATH"
+          # Usa bunx per invocare Tauri CLI senza dipendenze globali
+          bunx --yes @tauri-apps/cli@latest build
+
+      - name: Upload artifacts (Tauri bundles)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispering-windows-bundles
+          path: |
+            apps/whispering/src-tauri/target/release/bundle/**/*
+          if-no-files-found: warn
