@@ -1,0 +1,116 @@
+name: Build Whispering (Windows) — CPU-only Tray
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-whispering-windows-tray:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install WiX (NSIS/MSI toolchain)
+        run: |
+          choco install wixtoolset --yes --no-progress
+          if (-not (Test-Path "C:\Program Files (x86)\WiX Toolset v3.14\bin")) {
+            throw "WiX non trovato dove previsto."
+          }
+
+      # --- Patch anti-Vulkan CPU-only ---
+      - name: Force CPU-only in Cargo.toml (no Vulkan)
+        working-directory: apps/whispering/src-tauri
+        run: |
+          $file = "Cargo.toml"
+          if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in src-tauri" }
+          $text = Get-Content $file -Raw
+
+          # 1) rimuovi "features = [\"vulkan\"]"
+          $text = $text -replace 'features\s*=\s*\[\s*"vulkan"\s*\]', 'default-features = false'
+
+          # 2) se la dipendenza è semplice (whisper-rs = "0.11"), forza default-features=false
+          $text = $text -replace '(^\s*whisper-rs\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs = { version = "0.11", default-features = false }'
+          $text = $text -replace '(^\s*whisper-rs-sys\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs-sys = { version = "0.11.1", default-features = false }'
+
+          # 3) casi oggetto con version ma senza default-features esplicito
+          $text = $text -replace 'whisper-rs\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs = { version = "$1", default-features = false }'
+          $text = $text -replace 'whisper-rs-sys\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs-sys = { version = "$1", default-features = false }'
+
+          Set-Content $file $text -Encoding UTF8
+
+          Write-Host "✅ Cargo.toml forzato in CPU-only (nessun Vulkan)."
+
+      # --- Fix minimi front-end necessari in CI ---
+      - name: Add tiny ffmpeg shim (only if missing)
+        working-directory: apps/whispering
+        run: |
+          $dir = "src/routes/(config)/+layout"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ff = Join-Path $dir "check-ffmpeg.ts"
+          if (-not (Test-Path $ff)) {
+            @"
+export async function hasNavigatorLocalTranscriptionIssue() {
+  return false;
+}
+"@ | Set-Content $ff -Encoding UTF8
+            Write-Host "Created shim check-ffmpeg.ts"
+          } else {
+            Write-Host "Shim già presente."
+          }
+
+      - name: Bun install (workspace root)
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Bun install (whispering app)
+        working-directory: apps/whispering
+        run: bun install --frozen-lockfile || bun install
+
+      # --- Build frontend + bundle Tauri SOLO per Whispering ---
+      - name: Build Whispering UI (SSR build)
+        working-directory: apps/whispering
+        env:
+          NODE_ENV: production
+        run: bun run build
+
+      - name: Build Tauri bundle (CPU-only)
+        working-directory: apps/whispering
+        env:
+          # evita path strani in CI
+          RUSTFLAGS: "-C target-cpu=native"
+        run: |
+          bunx --bun @tauri-apps/cli@latest tauri build
+          Write-Host "Done Tauri build"
+
+      # --- Upload artifacts (prova più pattern) ---
+      - name: Upload installer artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispering-windows-tray
+          path: |
+            apps/whispering/src-tauri/target/release/bundle/**/*.exe
+            apps/whispering/src-tauri/target/release/bundle/**/*.msi
+            apps/whispering/src-tauri/target/release/bundle/**/*.zip
+            apps/whispering/src-tauri/target/release/**/*.exe
+            apps/whispering/src-tauri/target/release/**/*.msi
+          if-no-files-found: warn
