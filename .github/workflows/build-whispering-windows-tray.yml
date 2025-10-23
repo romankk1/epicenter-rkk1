@@ -37,36 +37,63 @@ jobs:
       - name: Install WiX (for MSI)
         run: |
           choco install wixtoolset --yes --no-progress
+          if (-not (Test-Path "C:\Program Files (x86)\WiX Toolset v3.14\bin")) { throw "WiX non trovato" }
 
-      # 🧩 Patch whisper-rs-sys to disable Vulkan linking
-      - name: Patch whisper-rs-sys build.rs (disable Vulkan)
+      # --- Prefetch delle crate Cargo (serve prima della patch) ---
+      - name: Cargo fetch (src-tauri)
+        working-directory: apps/whispering/src-tauri
         run: |
-          $pattern = "whisper-rs-sys-0.11.1"
-          $path = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $pattern } | Select-Object -First 1
-          if (-not $path) {
-            Write-Host "Waiting for cargo registry to populate..."
-            cargo fetch whisper-rs-sys
-            $path = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $pattern } | Select-Object -First 1
-          }
-          if ($path) {
-            $file = Join-Path $path.FullName "build.rs"
-            (Get-Content $file) -replace 'cargo:rustc-link-lib=vulkan-1','// cargo:rustc-link-lib=vulkan-1 (disabled for CI)' | Set-Content $file -Encoding UTF8
-            Write-Host "✅ Vulkan link disabled in whisper-rs-sys build.rs"
-          } else {
-            Write-Host "⚠️ whisper-rs-sys not found yet; skipping patch"
+          cargo fetch
+          Write-Host "✅ Cargo crates scaricate"
+
+      # --- Patch whisper-rs-sys build.rs per disabilitare Vulkan ---
+      - name: Patch whisper-rs-sys build.rs (disable Vulkan)
+        continue-on-error: true
+        run: |
+          $root = Join-Path $env:USERPROFILE ".cargo\registry\src"
+          $idx = Get-ChildItem -Path $root -Directory -Recurse -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Name -like "github.com-*" } | Select-Object -First 1
+          if (-not $idx) {
+            Write-Host "⚠️ Cargo registry non trovato (ancora). Salto la patch."
+            exit 0
           }
 
+          $crateDir = Get-ChildItem -Path $idx.FullName -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -like "whisper-rs-sys-*" } |
+                      Sort-Object Name -Descending | Select-Object -First 1
+
+          if ($crateDir) {
+            $file = Join-Path $crateDir.FullName "build.rs"
+            if (Test-Path $file) {
+              $content = Get-Content $file -Raw
+              if ($content -match "cargo:rustc-link-lib=vulkan-1") {
+                $content = $content -replace "cargo:rustc-link-lib=vulkan-1","// cargo:rustc-link-lib=vulkan-1 (disabled in CI)"
+                Set-Content $file $content -Encoding UTF8
+                Write-Host "✅ Vulkan link disabilitato in: $file"
+              } else {
+                Write-Host "ℹ️ Nessuna riga Vulkan trovata da patchare."
+              }
+            } else {
+              Write-Host "⚠️ build.rs non trovato in: $($crateDir.FullName)"
+            }
+          } else {
+            Write-Host "⚠️ Cartella whisper-rs-sys-* non trovata (forse non ancora scaricata)."
+          }
+
+      # --- Forza CPU-only (no Vulkan) in Cargo.toml ---
       - name: Force CPU-only (no Vulkan) in Cargo.toml
         working-directory: apps/whispering/src-tauri
         run: |
           $f="Cargo.toml"
+          if (-not (Test-Path $f)) { throw "Cargo.toml non trovato in src-tauri" }
           $t = Get-Content $f -Raw
           $t = $t -replace 'features\s*=\s*\[\s*"vulkan"\s*\]', 'default-features = false'
           $t = $t -replace '(^\s*whisper-rs\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs = { version = "0.11", default-features = false }'
           $t = $t -replace '(^\s*whisper-rs-sys\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs-sys = { version = "0.11.1", default-features = false }'
           Set-Content $f $t -Encoding UTF8
-          Write-Host "✅ Cargo.toml forced to CPU-only"
+          Write-Host "✅ Cargo.toml forzato CPU-only"
 
+      # --- Aggiunge shim ffmpeg (se mancante) ---
       - name: Add tiny ffmpeg shim (only if missing)
         working-directory: apps/whispering
         run: |
@@ -81,9 +108,12 @@ jobs:
               '}'
             )
             Set-Content -Path $ff -Value $lines -Encoding UTF8
-            Write-Host "Shim creato"
+            Write-Host "✅ Shim check-ffmpeg.ts creato"
+          } else {
+            Write-Host "ℹ️ Shim già presente"
           }
 
+      # --- Installazioni Bun ---
       - name: Bun install (workspace)
         run: bun install --frozen-lockfile || bun install
 
@@ -91,12 +121,14 @@ jobs:
         working-directory: apps/whispering
         run: bun install --frozen-lockfile || bun install
 
+      # --- Build frontend ---
       - name: Build Whispering UI (SSR)
         working-directory: apps/whispering
         env:
           NODE_ENV: production
         run: bun run build
 
+      # --- Build Tauri (CPU-only) ---
       - name: Build Tauri bundle (CPU-only)
         working-directory: apps/whispering
         env:
@@ -105,6 +137,7 @@ jobs:
           npx @tauri-apps/cli@latest build
           Write-Host "✅ Done Tauri build"
 
+      # --- Upload artifacts ---
       - name: Upload installer artifacts
         if: always()
         uses: actions/upload-artifact@v4
