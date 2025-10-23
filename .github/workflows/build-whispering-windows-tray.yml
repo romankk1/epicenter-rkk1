@@ -30,37 +30,34 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install WiX (NSIS/MSI toolchain)
+      - name: Install WiX (for NSIS/MSI)
         run: |
           choco install wixtoolset --yes --no-progress
           if (-not (Test-Path "C:\Program Files (x86)\WiX Toolset v3.14\bin")) {
             throw "WiX non trovato dove previsto."
           }
 
-      # --- Patch anti-Vulkan CPU-only ---
-      - name: Force CPU-only in Cargo.toml (no Vulkan)
+      # ---- Patch anti-Vulkan: forziamo CPU-only in Cargo.toml ----
+      - name: Force CPU-only (no Vulkan) in Cargo.toml
         working-directory: apps/whispering/src-tauri
         run: |
           $file = "Cargo.toml"
           if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in src-tauri" }
           $text = Get-Content $file -Raw
 
-          # 1) rimuovi "features = [\"vulkan\"]"
+          # Rimuovi features = ["vulkan"] e imposta default-features = false
           $text = $text -replace 'features\s*=\s*\[\s*"vulkan"\s*\]', 'default-features = false'
 
-          # 2) se la dipendenza è semplice (whisper-rs = "0.11"), forza default-features=false
+          # Forza whisper-rs / whisper-rs-sys senza default Vulkan
           $text = $text -replace '(^\s*whisper-rs\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs = { version = "0.11", default-features = false }'
           $text = $text -replace '(^\s*whisper-rs-sys\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs-sys = { version = "0.11.1", default-features = false }'
-
-          # 3) casi oggetto con version ma senza default-features esplicito
           $text = $text -replace 'whisper-rs\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs = { version = "$1", default-features = false }'
           $text = $text -replace 'whisper-rs-sys\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs-sys = { version = "$1", default-features = false }'
 
           Set-Content $file $text -Encoding UTF8
-
           Write-Host "✅ Cargo.toml forzato in CPU-only (nessun Vulkan)."
 
-      # --- Fix minimi front-end necessari in CI ---
+      # ---- Shim ffmpeg per evitare errori di import in CI ----
       - name: Add tiny ffmpeg shim (only if missing)
         working-directory: apps/whispering
         run: |
@@ -68,11 +65,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $ff = Join-Path $dir "check-ffmpeg.ts"
           if (-not (Test-Path $ff)) {
-            @"
+            $shim = @'
 export async function hasNavigatorLocalTranscriptionIssue() {
   return false;
 }
-"@ | Set-Content $ff -Encoding UTF8
+'@
+            Set-Content $ff $shim -Encoding UTF8
             Write-Host "Created shim check-ffmpeg.ts"
           } else {
             Write-Host "Shim già presente."
@@ -85,7 +83,6 @@ export async function hasNavigatorLocalTranscriptionIssue() {
         working-directory: apps/whispering
         run: bun install --frozen-lockfile || bun install
 
-      # --- Build frontend + bundle Tauri SOLO per Whispering ---
       - name: Build Whispering UI (SSR build)
         working-directory: apps/whispering
         env:
@@ -95,13 +92,11 @@ export async function hasNavigatorLocalTranscriptionIssue() {
       - name: Build Tauri bundle (CPU-only)
         working-directory: apps/whispering
         env:
-          # evita path strani in CI
           RUSTFLAGS: "-C target-cpu=native"
         run: |
           bunx --bun @tauri-apps/cli@latest tauri build
           Write-Host "Done Tauri build"
 
-      # --- Upload artifacts (prova più pattern) ---
       - name: Upload installer artifacts
         if: always()
         uses: actions/upload-artifact@v4
