@@ -1,5 +1,4 @@
 name: Build Whispering (Windows) — CPU-only Tray
-
 on:
   workflow_dispatch:
 
@@ -30,60 +29,54 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install WiX (for NSIS/MSI)
+      - name: Install WiX (for MSI)
         run: |
           choco install wixtoolset --yes --no-progress
-          if (-not (Test-Path "C:\Program Files (x86)\WiX Toolset v3.14\bin")) {
-            throw "WiX non trovato dove previsto."
-          }
+          if (-not (Test-Path "C:\Program Files (x86)\WiX Toolset v3.14\bin")) { throw "WiX non trovato" }
 
-      # ---- Patch anti-Vulkan: forziamo CPU-only in Cargo.toml ----
+      # ---- Patch: forza CPU-only (nessun Vulkan) in Cargo.toml ----
       - name: Force CPU-only (no Vulkan) in Cargo.toml
         working-directory: apps/whispering/src-tauri
         run: |
-          $file = "Cargo.toml"
-          if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in src-tauri" }
-          $text = Get-Content $file -Raw
+          $f="Cargo.toml"
+          if (-not (Test-Path $f)) { throw "Cargo.toml non trovato in src-tauri" }
+          $t = Get-Content $f -Raw
+          $t = $t -replace 'features\s*=\s*\[\s*"vulkan"\s*\]', 'default-features = false'
+          $t = $t -replace '(^\s*whisper-rs\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs = { version = "0.11", default-features = false }'
+          $t = $t -replace '(^\s*whisper-rs-sys\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs-sys = { version = "0.11.1", default-features = false }'
+          $t = $t -replace 'whisper-rs\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs = { version = "$1", default-features = false }'
+          $t = $t -replace 'whisper-rs-sys\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs-sys = { version = "$1", default-features = false }'
+          Set-Content $f $t -Encoding UTF8
+          Write-Host "✅ Cargo.toml forzato CPU-only"
 
-          # Rimuovi features = ["vulkan"] e imposta default-features = false
-          $text = $text -replace 'features\s*=\s*\[\s*"vulkan"\s*\]', 'default-features = false'
-
-          # Forza whisper-rs / whisper-rs-sys senza default Vulkan
-          $text = $text -replace '(^\s*whisper-rs\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs = { version = "0.11", default-features = false }'
-          $text = $text -replace '(^\s*whisper-rs-sys\s*=\s*"\d+[^"]*"\s*$)', 'whisper-rs-sys = { version = "0.11.1", default-features = false }'
-          $text = $text -replace 'whisper-rs\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs = { version = "$1", default-features = false }'
-          $text = $text -replace 'whisper-rs-sys\s*=\s*\{\s*version\s*=\s*"([^"]+)"\s*(,\s*features\s*=\s*\[[^\]]*\])?\s*\}', 'whisper-rs-sys = { version = "$1", default-features = false }'
-
-          Set-Content $file $text -Encoding UTF8
-          Write-Host "✅ Cargo.toml forzato in CPU-only (nessun Vulkan)."
-
-      # ---- Shim ffmpeg per evitare errori di import in CI ----
+      # ---- Shim ffmpeg: scritto come array di righe per evitare problemi YAML ----
       - name: Add tiny ffmpeg shim (only if missing)
         working-directory: apps/whispering
         run: |
           $dir = "src/routes/(config)/+layout"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $ff = Join-Path $dir "check-ffmpeg.ts"
+          $ff  = Join-Path $dir "check-ffmpeg.ts"
           if (-not (Test-Path $ff)) {
-            $shim = @'
-export async function hasNavigatorLocalTranscriptionIssue() {
-  return false;
-}
-'@
-            Set-Content $ff $shim -Encoding UTF8
+            $lines = @(
+              'export async function hasNavigatorLocalTranscriptionIssue() {'
+              '  // Shim per CI: nessun problema di ffmpeg su Windows runner'
+              '  return false;'
+              '}'
+            )
+            Set-Content -Path $ff -Value $lines -Encoding UTF8
             Write-Host "Created shim check-ffmpeg.ts"
           } else {
             Write-Host "Shim già presente."
           }
 
-      - name: Bun install (workspace root)
+      - name: Bun install (workspace)
         run: bun install --frozen-lockfile || bun install
 
       - name: Bun install (whispering app)
         working-directory: apps/whispering
         run: bun install --frozen-lockfile || bun install
 
-      - name: Build Whispering UI (SSR build)
+      - name: Build Whispering UI (SSR)
         working-directory: apps/whispering
         env:
           NODE_ENV: production
@@ -106,6 +99,4 @@ export async function hasNavigatorLocalTranscriptionIssue() {
             apps/whispering/src-tauri/target/release/bundle/**/*.exe
             apps/whispering/src-tauri/target/release/bundle/**/*.msi
             apps/whispering/src-tauri/target/release/bundle/**/*.zip
-            apps/whispering/src-tauri/target/release/**/*.exe
-            apps/whispering/src-tauri/target/release/**/*.msi
           if-no-files-found: warn
