@@ -1,148 +1,40 @@
-name: Build Windows Tray v19b (CPU-only, no Vulkan)
+name: Build Windows Tray — v17 (shim only)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  make-ffmpeg-shim:
     runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
-    env:
-      NODE_ENV: production
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install Tauri CLI (global)
-        run: |
-          bun add -g @tauri-apps/cli
-          tauri -V
-
-      - name: Create ffmpeg check shim
+      - name: Create check-ffmpeg.ts safely (PowerShell here-string)
         run: |
           $ffmpegPath = "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
-          $ffmpegDir  = Split-Path $ffmpegPath
-          if (-not (Test-Path $ffmpegDir)) { New-Item -ItemType Directory -Force -Path $ffmpegDir | Out-Null }
+          $dir = Split-Path $ffmpegPath
+          if (-not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          }
 
-          @'
-export type FfmpegCheck = { available: boolean; version?: string; error?: string };
-export async function checkFfmpeg(): Promise<FfmpegCheck> { return { available: true, version: "CI" }; }
-export function hasNavigatorLocalTranscriptionIssue(): boolean { return false; }
-export default checkFfmpeg;
-'@ | Out-File -FilePath $ffmpegPath -Encoding utf8
+          $content = @'
+          export type FfmpegCheck = { available: boolean; version?: string; error?: string };
+          export async function checkFfmpeg(): Promise<FfmpegCheck> {
+            return { available: true, version: "CI" };
+          }
+          export function hasNavigatorLocalTranscriptionIssue(): boolean {
+            return false;
+          }
+          export default checkFfmpeg;
+          '@
 
-          Write-Host "✅ Shim scritto in $ffmpegPath"
+          Set-Content -Path $ffmpegPath -Value $content -Encoding UTF8
+          Write-Host "✅ Wrote $ffmpegPath"
 
-      - name: Force CPU-only in Cargo.toml (remove Vulkan features)
-        working-directory: apps/whispering/src-tauri
+      - name: Show file back (for sanity)
         run: |
-          $file = "Cargo.toml"
-          if (-not (Test-Path $file)) { throw "Cargo.toml non trovato in $(Get-Location)" }
-          $text = Get-Content $file -Raw
-
-          # Assicura sezione [features] con default = []
-          if ($text -notmatch '^\s*\[features\]\s*$(?ms)') {
-            $text = $text.TrimEnd() + "`r`n`r`n[features]`r`ndefault = []`r`n"
-          } elseif ($text -notmatch '(?ms)^\s*\[features\][\s\S]*?^\s*default\s*=\s*\[') {
-            $text = $text -replace '(?ms)^\s*\[features\]\s*', "[features]`r`ndefault = []`r`n"
-          }
-
-          function Ensure-InlineDepNoFeatures([string]$src, [string]$name) {
-            $pattern = "(?ms)^\s*" + [regex]::Escape($name) + "\s*=\s*\{[^}]*\}"
-            if ($src -match $pattern) {
-              return ($src -replace $pattern, {
-                param($m)
-                $blk = $m.Value
-                $blk = $blk -replace '(?i)features\s*=\s*\[[^\]]*\]\s*,?\s*', ''
-                if ($blk -match '(?i)default-features\s*=') {
-                  $blk = $blk -replace '(?i)default-features\s*=\s*\w+', 'default-features = false'
-                } else {
-                  $blk = $blk -replace '\}\s*$', ', default-features = false }'
-                }
-                $blk = $blk -replace '\}\s*$', ', features = [] }'
-                $blk
-              })
-            }
-            return $src
-          }
-
-          function Ensure-TableDepNoFeatures([string]$src, [string]$name) {
-            $headPattern = "^\s*\[dependencies\." + [regex]::Escape($name) + "\]\s*$"
-            if ($src -match $headPattern) {
-              $src = ($src -replace "(?ms)($headPattern)([\s\S]*?)(?=^\s*\[|\Z)", {
-                param($m)
-                $head = $m.Groups[1].Value
-                $body = $m.Groups[2].Value
-                $body = ($body -split "(`r`n|`n)") | Where-Object {
-                  $_ -notmatch '(?i)^\s*features\s*=' -and $_ -notmatch '(?i)^\s*default-features\s*='
-                } | ForEach-Object { $_ } | Out-String
-                $body = $body -replace "^\s+$",""
-                $body = $body.TrimEnd()
-                $injected = @()
-                if ($body -ne '') { $injected += $body }
-                $injected += "default-features = false"
-                $injected += "features = []"
-                $out = $head + "`r`n" + ($injected -join "`r`n") + "`r`n"
-                $out
-              })
-            }
-            return $src
-          }
-
-          $text = Ensure-InlineDepNoFeatures $text 'whisper-rs'
-          $text = Ensure-InlineDepNoFeatures $text 'whisper-rs-sys'
-          $text = Ensure-TableDepNoFeatures $text 'whisper-rs'
-          $text = Ensure-TableDepNoFeatures $text 'whisper-rs-sys'
-
-          if ($text -notmatch '(?ms)^\s*whisper-rs\s*=') {
-            $text = $text -replace '(?ms)^\s*\[dependencies\]\s*', "[dependencies]`r`nwhisper-rs = { version = ""0.11"", default-features = false, features = [] }`r`n"
-          }
-          if ($text -notmatch '(?ms)^\s*whisper-rs-sys\s*=') {
-            $text = $text -replace '(?ms)^\s*\[dependencies\]\s*', "[dependencies]`r`nwhisper-rs-sys = { version = ""0.11.1"", default-features = false, features = [] }`r`n"
-          }
-
-          # Rimuovi la parola "vulkan" in eventuali array di features residui
-          $before = $text
-          $text = $text -replace '(?i)"vulkan"\s*,\s*', ''
-          $text = $text -replace '(?i),\s*"vulkan"\s*', ''
-          $text = $text -replace '(?i)"vulkan"\s*', ''
-          $text = $text -replace ',\s*,', ','
-          $text = $text -replace ',\s*\]', ' ]'
-          $text = $text -replace '\[\s*,', '['
-          if ($text -ne $before) { Write-Host "🧹 Rimossi riferimenti a ""vulkan""" }
-
-          Set-Content -Path $file -Value $text -Encoding utf8
-          Write-Host "✅ Cargo.toml forzato CPU-only (no Vulkan)"
-
-      - name: Install JS deps (root)
-        run: |
-          bun install --frozen-lockfile
-          Write-Host "✅ Root deps installed"
-
-      - name: Build Whispering (SSR)
-        working-directory: apps/whispering
-        run: |
-          bun run build
-          Write-Host "✅ Whispering SSR built"
-
-      - name: Build Tauri (Windows exe)
-        working-directory: apps/whispering
-        run: |
-          Write-Host "🚀 Starting Tauri build"
-          tauri build
-          Write-Host "✅ Tauri build done (CPU-only)"
-
-      - name: Upload artifact (.exe)
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: whispering-windows-with-tray
-          path: apps/whispering/src-tauri/target/release/*.exe
+          Get-Content "apps/whispering/src/routes/(config)/+layout/check-ffmpeg.ts"
